@@ -45,11 +45,13 @@ MNISTVulkan::MNISTVulkan(core::vulkan::VulkanContext* context, const std::string
     return;
   }
 
-  layers_.emplace_back(std::make_unique<Linear>(context_, fc1_weights->data, fc1_bias->data,
-                                                kInputSize, kFC1OutputSize, kBatchSize));
+  auto fc1 = std::make_unique<Linear>(context_, kInputSize, kFC1OutputSize, kBatchSize);
+  fc1->MapWeights(fc1_weights->data, fc1_bias->data);
+  layers_.emplace_back(std::move(fc1));
   layers_.emplace_back(std::make_unique<Relu>(context_, kFC1OutputSize));
-  layers_.emplace_back(std::make_unique<Linear>(context_, fc2_weights->data, fc2_bias->data,
-                                                kFC1OutputSize, kFC2OutputSize, kBatchSize));
+  auto fc2 = std::make_unique<Linear>(context_, kFC1OutputSize, kFC2OutputSize, kBatchSize);
+  fc2->MapWeights(fc2_weights->data, fc2_bias->data);
+  layers_.emplace_back(std::move(fc2));
   layers_.emplace_back(std::make_unique<Softmax>(context_, kFC2OutputSize, kBatchSize));
 }
 

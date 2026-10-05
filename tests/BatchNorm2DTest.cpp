@@ -58,7 +58,8 @@ void CheckReference(const std::string& name) {
                                            vkai::kHostVisibleMemory);
   input_buffer.MapData(
       [&](void* data) { std::memcpy(data, input.data(), input.size() * sizeof(float)); });
-  BatchNorm2D bn(&context, c, h * w, n, eps, mean, variance, weight, bias);
+  BatchNorm2D bn(&context, c, h * w, n, eps);
+  bn.MapParameters(mean, variance, weight, bias);
   bn.Init();
   auto command = core::vulkan::VulkanCommandBuffer::BeginOneTimeCommands(&context);
   bn.Execute(command.buffer(), input_buffer, output_buffer);
@@ -80,11 +81,11 @@ TEST(BatchNorm2DTest, RejectsInvalidParameters) {
   core::vulkan::VulkanContext context(false, core::vulkan::QueueFamilyType::Compute,
                                       VK_NULL_HANDLE);
   context.Init();
-  EXPECT_THROW(BatchNorm2D(&context, 2, 1, 1, 1e-5F, {0}, {1, 1}), std::invalid_argument);
-  EXPECT_THROW(BatchNorm2D(&context, 1, 1, 1, -1.0F, {0}, {1}), std::invalid_argument);
-  EXPECT_THROW(BatchNorm2D(&context, 1, 1, 1, 1e-5F, {0}, {-1}), std::invalid_argument);
-  EXPECT_THROW(BatchNorm2D(&context, 1, 1, 1, 1e-5F, {0}, {1}, {1, 2}), std::invalid_argument);
-  EXPECT_THROW(BatchNorm2D(&context, std::numeric_limits<int>::max(), 2, 1, 1e-5F, {}, {}),
+  BatchNorm2D bn(&context, 1, 1, 1, 1e-5F);
+  EXPECT_THROW(bn.MapParameters({0}, {-1}), std::invalid_argument);
+  EXPECT_THROW(bn.MapParameters({0}, {1}, {1, 2}), std::invalid_argument);
+  EXPECT_THROW(BatchNorm2D(&context, 1, 1, 1, -1.0F), std::invalid_argument);
+  EXPECT_THROW(BatchNorm2D(&context, std::numeric_limits<int>::max(), 2, 1, 1e-5F),
                std::invalid_argument);
 }
 

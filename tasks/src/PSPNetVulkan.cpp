@@ -115,10 +115,10 @@ struct PSPNetVulkan::Impl {
     const int output_width = ConvOutputSize(input->width, kernel, stride, padding, dilation);
     Tensor* output = CreateTensor(output_channels, output_height, output_width);
     if (output == nullptr) return nullptr;
-    auto layer =
-        std::make_unique<Conv2D>(context, weight->data, input->channels, output_channels,
-                                 input->height, input->width, kernel, kernel, stride, stride,
-                                 padding, padding, PaddingType::Zero, 1, bias, dilation, dilation);
+    auto layer = std::make_unique<Conv2D>(context, input->channels, output_channels, input->height,
+                                          input->width, kernel, kernel, stride, stride, padding,
+                                          padding, PaddingType::Zero, 1, dilation, dilation);
+    layer->MapWeights(weight->data, bias);
     AddUnary(KeepLayer(std::move(layer)), input, output);
     return output;
   }
@@ -136,9 +136,9 @@ struct PSPNetVulkan::Impl {
       return nullptr;
     Tensor* output = CreateTensor(input->channels, input->height, input->width);
     if (output == nullptr) return nullptr;
-    auto layer =
-        std::make_unique<BatchNorm2D>(context, input->channels, input->height * input->width, 1,
-                                      1e-5F, mean->data, variance->data, weight->data, bias->data);
+    auto layer = std::make_unique<BatchNorm2D>(context, input->channels,
+                                               input->height * input->width, 1, 1e-5F);
+    layer->MapParameters(mean->data, variance->data, weight->data, bias->data);
     AddUnary(KeepLayer(std::move(layer)), input, output);
     return output;
   }

@@ -11,29 +11,13 @@
 namespace vkai {
 namespace {
 
-core::vulkan::VulkanContext* ValidateParameters(core::vulkan::VulkanContext* context, int channels,
-                                                int spatial, int batch, float eps,
-                                                const std::vector<float>& mean,
-                                                const std::vector<float>& variance,
-                                                const std::vector<float>& weight,
-                                                const std::vector<float>& bias) {
+core::vulkan::VulkanContext* ValidateConfiguration(core::vulkan::VulkanContext* context,
+                                                   int channels, int spatial, int batch,
+                                                   float eps) {
   if (channels <= 0 || spatial <= 0 || batch <= 0 || !std::isfinite(eps) || eps < 0 ||
       channels > std::numeric_limits<int>::max() / spatial ||
       channels * spatial > std::numeric_limits<int>::max() / batch) {
     throw std::invalid_argument("Invalid BatchNorm2D dimensions or epsilon");
-  }
-  const size_t count = static_cast<size_t>(channels);
-  if (mean.size() != count || variance.size() != count ||
-      (!weight.empty() && weight.size() != count) || (!bias.empty() && bias.size() != count)) {
-    throw std::invalid_argument("BatchNorm2D parameters must match channel count");
-  }
-  for (size_t c = 0; c < count; ++c) {
-    if (!std::isfinite(mean[c]) || !std::isfinite(variance[c]) || variance[c] < 0 ||
-        !std::isfinite(variance[c] + eps) || variance[c] + eps <= 0 ||
-        (!weight.empty() && !std::isfinite(weight[c])) ||
-        (!bias.empty() && !std::isfinite(bias[c]))) {
-      throw std::invalid_argument("Invalid BatchNorm2D running statistics or affine parameters");
-    }
   }
   return context;
 }
@@ -41,35 +25,48 @@ core::vulkan::VulkanContext* ValidateParameters(core::vulkan::VulkanContext* con
 }  // namespace
 
 BatchNorm2D::BatchNorm2D(core::vulkan::VulkanContext* context, int channels,
-                         int elements_per_channel, int batch_size, float eps,
-                         const std::vector<float>& running_mean,
-                         const std::vector<float>& running_var, const std::vector<float>& weight,
-                         const std::vector<float>& bias)
-    : Layer(ValidateParameters(context, channels, elements_per_channel, batch_size, eps,
-                               running_mean, running_var, weight, bias)),
+                         int elements_per_channel, int batch_size, float eps)
+    : Layer(ValidateConfiguration(context, channels, elements_per_channel, batch_size, eps)),
+      eps_(eps),
       uniform_buffer_(context, sizeof(UniformData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                       kHostVisibleMemory),
       parameters_buffer_(context, static_cast<VkDeviceSize>(channels) * 2 * sizeof(float),
                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, kHostVisibleMemory) {
-  // The base class does not initialize descriptor handles until Init().
-  descriptor_pool_ = VK_NULL_HANDLE;
-  descriptor_set_layout_ = VK_NULL_HANDLE;
-  descriptor_set_ = VK_NULL_HANDLE;
   uniform_data_ = {channels, elements_per_channel, channels * elements_per_channel * batch_size, 0};
   uniform_buffer_.MapData(
       [this](void* data) { std::memcpy(data, &uniform_data_, sizeof(UniformData)); });
-  std::vector<float> parameters(static_cast<size_t>(channels) * 2);
-  for (int c = 0; c < channels; ++c) {
-    const float scale = (weight.empty() ? 1.0F : weight[c]) / std::sqrt(running_var[c] + eps);
+}
+
+void BatchNorm2D::MapParameters(const std::vector<float>& running_mean,
+                                const std::vector<float>& running_var,
+                                const std::vector<float>& weight, const std::vector<float>& bias) {
+  const size_t count = static_cast<size_t>(uniform_data_.channels);
+  if (running_mean.size() != count || running_var.size() != count ||
+      (!weight.empty() && weight.size() != count) || (!bias.empty() && bias.size() != count)) {
+    throw std::invalid_argument("BatchNorm2D parameters must match channel count");
+  }
+  std::vector<float> parameters(count * 2);
+  for (size_t c = 0; c < count; ++c) {
+    if (!std::isfinite(running_mean[c]) || !std::isfinite(running_var[c]) || running_var[c] < 0 ||
+        !std::isfinite(running_var[c] + eps_) || running_var[c] + eps_ <= 0 ||
+        !std::isfinite(weight.empty() ? 1.0F : weight[c]) ||
+        !std::isfinite(bias.empty() ? 0.0F : bias[c])) {
+      throw std::invalid_argument("Invalid BatchNorm2D running statistics or affine parameters");
+    }
+    const float scale = (weight.empty() ? 1.0F : weight[c]) / std::sqrt(running_var[c] + eps_);
     parameters[2 * c] = scale;
     parameters[2 * c + 1] = (bias.empty() ? 0.0F : bias[c]) - running_mean[c] * scale;
   }
   parameters_buffer_.MapData([&parameters](void* data) {
     std::memcpy(data, parameters.data(), parameters.size() * sizeof(float));
   });
+  parameters_mapped_ = true;
 }
 
 void BatchNorm2D::Init() {
+  if (!parameters_mapped_) {
+    throw std::logic_error("BatchNorm2D parameters must be mapped before Init");
+  }
   VulkanCompute::Init();
   CreateUniformBufferDescriptorSet(0, uniform_buffer_);
   vkUpdateDescriptorSets(context_->logical_device, 1, &writes_[0], 0, nullptr);

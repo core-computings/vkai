@@ -11,11 +11,12 @@ enum class PaddingType : int {
 
 class Conv2D : public Layer {
  public:
-  Conv2D(core::vulkan::VulkanContext* context, const std::vector<float>& weights,
-         int input_channels, int output_channels, int input_height, int input_width,
-         int kernel_height, int kernel_width, int stride_height, int stride_width,
-         int padding_height, int padding_width, PaddingType padding_type, int batch_size = 1,
-         const std::vector<float>& bias = {}, int dilation_height = 1, int dilation_width = 1);
+  Conv2D(core::vulkan::VulkanContext* context, int input_channels, int output_channels,
+         int input_height, int input_width, int kernel_height, int kernel_width, int stride_height,
+         int stride_width, int padding_height, int padding_width, PaddingType padding_type,
+         int batch_size = 1, int dilation_height = 1, int dilation_width = 1);
+
+  void MapWeights(const std::vector<float>& weights, const std::vector<float>& bias = {});
 
   void Init() override;
 
@@ -63,6 +64,7 @@ class Conv2D : public Layer {
   core::vulkan::VulkanBuffer bias_buffer_;
   UniformData uniform_data_;
   bool valid_ = false;
+  bool weights_mapped_ = false;
 };
 
 }  // namespace vkai

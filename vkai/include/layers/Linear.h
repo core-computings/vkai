@@ -6,8 +6,9 @@ namespace vkai {
 
 class Linear : public Layer {
  public:
-  Linear(core::vulkan::VulkanContext* context, const std::vector<float>& weights,
-         const std::vector<float>& bias, int input_size, int output_size, int batch_size = 1);
+  Linear(core::vulkan::VulkanContext* context, int input_size, int output_size, int batch_size = 1);
+
+  void MapWeights(const std::vector<float>& weights, const std::vector<float>& bias);
 
   void Init() override;
 
@@ -34,6 +35,7 @@ class Linear : public Layer {
   } uniform_data_;
 
   bool valid_ = false;
+  bool weights_mapped_ = false;
 };
 
 }  // namespace vkai

@@ -8,7 +8,11 @@ namespace vkai {
 
 class Layer : public core::vulkan::VulkanCompute {
  public:
-  explicit Layer(core::vulkan::VulkanContext* context) : core::vulkan::VulkanCompute(context) {}
+  explicit Layer(core::vulkan::VulkanContext* context) : core::vulkan::VulkanCompute(context) {
+    descriptor_set_layout_ = VK_NULL_HANDLE;
+    descriptor_pool_ = VK_NULL_HANDLE;
+    descriptor_set_ = VK_NULL_HANDLE;
+  }
   virtual ~Layer() = default;
 
   virtual void Execute(const VkCommandBuffer& command_buffer,

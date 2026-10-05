@@ -8,16 +8,17 @@
 
 namespace vkai {
 
-Conv2D::Conv2D(core::vulkan::VulkanContext* context, const std::vector<float>& weights,
-               int input_channels, int output_channels, int input_height, int input_width,
-               int kernel_height, int kernel_width, int stride_height, int stride_width,
-               int padding_height, int padding_width, PaddingType padding_type, int batch_size,
-               const std::vector<float>& bias, int dilation_height, int dilation_width)
+Conv2D::Conv2D(core::vulkan::VulkanContext* context, int input_channels, int output_channels,
+               int input_height, int input_width, int kernel_height, int kernel_width,
+               int stride_height, int stride_width, int padding_height, int padding_width,
+               PaddingType padding_type, int batch_size, int dilation_height, int dilation_width)
     : Layer(context),
       uniform_buffer_(context, sizeof(UniformData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                       kHostVisibleMemory),
-      weights_buffer_(context, vkai::GetBufferSize(weights), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                      kHostVisibleMemory),
+      weights_buffer_(context,
+                      static_cast<VkDeviceSize>(input_channels) * output_channels * kernel_height *
+                          kernel_width * sizeof(float),
+                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, kHostVisibleMemory),
       bias_buffer_(context, static_cast<VkDeviceSize>(output_channels) * sizeof(float),
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, kHostVisibleMemory),
       uniform_data_{
@@ -61,35 +62,37 @@ Conv2D::Conv2D(core::vulkan::VulkanContext* context, const std::vector<float>& w
     return;
   }
 
-  const size_t expected_weight_count =
-      static_cast<size_t>(output_channels) * input_channels * kernel_height * kernel_width;
-  if (weights.size() != expected_weight_count) {
-    std::cerr << "Conv2D weights size does not match OIHW dimensions\n";
-    return;
-  }
-  if (!bias.empty() && bias.size() != static_cast<size_t>(output_channels)) {
-    std::cerr << "Conv2D bias size does not match its output channels\n";
-    return;
-  }
-
   uniform_buffer_.MapData(
       [this](void* data) { std::memcpy(data, &uniform_data_, sizeof(UniformData)); });
+  valid_ = true;
+}
+
+void Conv2D::MapWeights(const std::vector<float>& weights, const std::vector<float>& bias) {
+  if (!valid_) {
+    throw std::logic_error("Cannot map weights for an invalid Conv2D");
+  }
+  const size_t expected_weight_count = static_cast<size_t>(uniform_data_.output_channels) *
+                                       uniform_data_.input_channels * uniform_data_.kernel_height *
+                                       uniform_data_.kernel_width;
+  if (weights.size() != expected_weight_count ||
+      (!bias.empty() && bias.size() != static_cast<size_t>(uniform_data_.output_channels))) {
+    throw std::invalid_argument("Conv2D weights or bias size does not match its dimensions");
+  }
   weights_buffer_.MapData([&weights](void* data) {
     std::memcpy(data, weights.data(), weights.size() * sizeof(float));
   });
-  bias_buffer_.MapData([&bias, output_channels](void* data) {
-    std::memset(data, 0, static_cast<size_t>(output_channels) * sizeof(float));
+  bias_buffer_.MapData([&bias, this](void* data) {
+    std::memset(data, 0, static_cast<size_t>(uniform_data_.output_channels) * sizeof(float));
     if (!bias.empty()) {
       std::memcpy(data, bias.data(), bias.size() * sizeof(float));
     }
   });
-  valid_ = true;
+  weights_mapped_ = true;
 }
 
 void Conv2D::Init() {
-  if (!valid_) {
-    std::cerr << "Cannot initialize an invalid Conv2D\n";
-    return;
+  if (!valid_ || !weights_mapped_) {
+    throw std::logic_error("Conv2D must have valid dimensions and mapped weights before Init");
   }
   VulkanCompute::Init();
 

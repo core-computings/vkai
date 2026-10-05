@@ -77,9 +77,10 @@ void ExpectConvMatchesReference(const std::filesystem::path& input_path,
   input_buffer.MapData(
       [&input](void* data) { std::memcpy(data, input.data(), input.size() * sizeof(float)); });
 
-  vkai::Conv2D conv(&context, weights, input_channels, output_channels, input_height, input_width,
+  vkai::Conv2D conv(&context, input_channels, output_channels, input_height, input_width,
                     kernel_height, kernel_width, 1, 1, padding_height, padding_width,
-                    vkai::PaddingType::Zero, 1, bias, dilation_height, dilation_width);
+                    vkai::PaddingType::Zero, 1, dilation_height, dilation_width);
+  conv.MapWeights(weights, bias);
   ASSERT_EQ(conv.OutputHeight(), output_height);
   ASSERT_EQ(conv.OutputWidth(), output_width);
   conv.Init();
@@ -143,9 +144,10 @@ TEST(Conv2DTest, MatchesMNIST12FirstConvolution) {
   input_buffer.MapData(
       [&input](void* data) { std::memcpy(data, input.data(), input.size() * sizeof(float)); });
 
-  Conv2D conv2d(&context, weights, kInputChannels, kOutputChannels, kInputHeight, kInputWidth,
-                kKernelHeight, kKernelWidth, kStrideHeight, kStrideWidth, kPaddingHeight,
-                kPaddingWidth, PaddingType::Zero, kBatchSize);
+  Conv2D conv2d(&context, kInputChannels, kOutputChannels, kInputHeight, kInputWidth, kKernelHeight,
+                kKernelWidth, kStrideHeight, kStrideWidth, kPaddingHeight, kPaddingWidth,
+                PaddingType::Zero, kBatchSize);
+  conv2d.MapWeights(weights);
   ASSERT_EQ(conv2d.OutputHeight(), kInputHeight);
   ASSERT_EQ(conv2d.OutputWidth(), kInputWidth);
   conv2d.Init();
@@ -186,7 +188,8 @@ TEST(Conv2DTest, SupportsReflectPadding) {
   input_buffer.MapData(
       [&input](void* data) { std::memcpy(data, input.data(), input.size() * sizeof(float)); });
 
-  Conv2D conv2d(&context, weights, 1, 1, 3, 3, 3, 3, 1, 1, 1, 1, PaddingType::Reflect);
+  Conv2D conv2d(&context, 1, 1, 3, 3, 3, 3, 1, 1, 1, 1, PaddingType::Reflect);
+  conv2d.MapWeights(weights);
   conv2d.Init();
 
   auto command_buffer = core::vulkan::VulkanCommandBuffer::BeginOneTimeCommands(&context);

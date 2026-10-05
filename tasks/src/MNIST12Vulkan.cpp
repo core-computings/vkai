@@ -87,23 +87,25 @@ bool MNIST12Vulkan::InitializeLayers() {
     return false;
   }
 
-  conv1_ = std::make_unique<Conv2D>(context_, conv1_weight->data, kInputChannels, kConv1Channels,
-                                    kInputHeight, kInputWidth, kKernelSize, kKernelSize, 1, 1,
-                                    kConvPadding, kConvPadding, PaddingType::Zero, kBatchSize);
+  conv1_ = std::make_unique<Conv2D>(context_, kInputChannels, kConv1Channels, kInputHeight,
+                                    kInputWidth, kKernelSize, kKernelSize, 1, 1, kConvPadding,
+                                    kConvPadding, PaddingType::Zero, kBatchSize);
+  conv1_->MapWeights(conv1_weight->data);
   add1_ = std::make_unique<Add>(context_, kConv1Channels, kInputHeight * kInputWidth, kBatchSize);
   relu1_ = std::make_unique<Relu>(context_, kConv1Channels * kInputHeight * kInputWidth);
   pool1_ = std::make_unique<MaxPool2D>(context_, kConv1Channels, kInputHeight, kInputWidth,
                                        kPool1Size, kPool1Size, kPool1Size, kPool1Size, kBatchSize);
-  conv2_ = std::make_unique<Conv2D>(context_, conv2_weight->data, kConv1Channels, kConv2Channels,
-                                    kPool1Height, kPool1Width, kKernelSize, kKernelSize, 1, 1,
-                                    kConvPadding, kConvPadding, PaddingType::Zero, kBatchSize);
+  conv2_ = std::make_unique<Conv2D>(context_, kConv1Channels, kConv2Channels, kPool1Height,
+                                    kPool1Width, kKernelSize, kKernelSize, 1, 1, kConvPadding,
+                                    kConvPadding, PaddingType::Zero, kBatchSize);
+  conv2_->MapWeights(conv2_weight->data);
   add2_ = std::make_unique<Add>(context_, kConv2Channels, kPool1Height * kPool1Width, kBatchSize);
   relu2_ = std::make_unique<Relu>(context_, kConv2Channels * kPool1Height * kPool1Width);
   pool2_ = std::make_unique<MaxPool2D>(context_, kConv2Channels, kPool1Height, kPool1Width,
                                        kPool2Size, kPool2Size, kPool2Size, kPool2Size, kBatchSize);
-  fc_ = std::make_unique<Linear>(context_, fc_weight->data, fc_bias->data,
-                                 kConv2Channels * kPool2Height * kPool2Width, kOutputClasses,
-                                 kBatchSize);
+  fc_ = std::make_unique<Linear>(context_, kConv2Channels * kPool2Height * kPool2Width,
+                                 kOutputClasses, kBatchSize);
+  fc_->MapWeights(fc_weight->data, fc_bias->data);
 
   conv1_bias_buffer_ = std::make_unique<core::vulkan::VulkanBuffer>(
       context_, conv1_bias->data.size() * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,

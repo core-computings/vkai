@@ -56,7 +56,8 @@ std::vector<float> RunLinear(const std::vector<float>& input, const std::vector<
 
   input_buffer.MapData(
       [&input](void* data) { std::memcpy(data, input.data(), input.size() * sizeof(float)); });
-  vkai::Linear layer(&context, weights, bias, input_size, output_size, batch_size);
+  vkai::Linear layer(&context, input_size, output_size, batch_size);
+  layer.MapWeights(weights, bias);
   layer.Init();
 
   auto command_buffer = core::vulkan::VulkanCommandBuffer::BeginOneTimeCommands(&context);
