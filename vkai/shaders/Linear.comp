@@ -23,7 +23,13 @@ layout(set = 0, binding = 4, std430) writeonly buffer OutputBuffer {
     float output_buffer[];
 };
 
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+// Each workgroup computes a 16x16 [batch, output] tile. K is loaded in
+// matching tiles so its values are reused from workgroup-local memory.
+const uint kTileSize = 16;
+layout(local_size_x = kTileSize, local_size_y = kTileSize, local_size_z = 1) in;
+
+shared float input_tile[kTileSize][kTileSize];
+shared float weight_tile[kTileSize][kTileSize];
 
 // input: [batch_size, input_size]
 // weights: [output_size, input_size]
@@ -32,24 +38,37 @@ layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 void main()
 {
-    uint global_idx = gl_GlobalInvocationID.x;
+    const uint local_out = gl_LocalInvocationID.x;
+    const uint local_batch = gl_LocalInvocationID.y;
+    const uint out_idx = gl_WorkGroupID.x * kTileSize + local_out;
+    const uint batch_idx = gl_WorkGroupID.y * kTileSize + local_batch;
+    const uint input_size = uint(ubo.input_size);
+    const uint output_size = uint(ubo.output_size);
+    const uint batch_size = uint(ubo.batch_size);
 
-    uint batch_idx = global_idx / ubo.output_size;
-    uint out_idx   = global_idx % ubo.output_size;
+    float sum = 0.0;
 
-    if (batch_idx >= ubo.batch_size ||
-        out_idx >= ubo.output_size) {
-        return;
+    for (uint tile_start = 0; tile_start < input_size; tile_start += kTileSize) {
+        const uint input_idx = tile_start + local_out;
+        const uint weight_idx = tile_start + local_batch;
+
+        input_tile[local_batch][local_out] =
+            (batch_idx < batch_size && input_idx < input_size)
+                ? input_buffer[batch_idx * input_size + input_idx]
+                : 0.0;
+        weight_tile[local_batch][local_out] =
+            (out_idx < output_size && weight_idx < input_size)
+                ? weight_buffer[out_idx * input_size + weight_idx]
+                : 0.0;
+        barrier();
+
+        for (uint k = 0; k < kTileSize; ++k) {
+            sum += input_tile[local_batch][k] * weight_tile[k][local_out];
+        }
+        barrier();
     }
 
-    float sum = bias_buffer[out_idx];
-
-    for (uint i = 0; i < ubo.input_size; ++i) {
-        uint input_idx  = batch_idx * ubo.input_size + i;
-        uint weight_idx = out_idx * ubo.input_size + i;
-
-        sum += input_buffer[input_idx] * weight_buffer[weight_idx];
+    if (batch_idx < batch_size && out_idx < output_size) {
+        output_buffer[batch_idx * output_size + out_idx] = sum + bias_buffer[out_idx];
     }
-
-    output_buffer[batch_idx * ubo.output_size + out_idx] = sum;
 }

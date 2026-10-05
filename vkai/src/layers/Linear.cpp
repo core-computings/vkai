@@ -89,9 +89,12 @@ void Linear::Execute(const VkCommandBuffer& command_buffer,
   vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1,
                           &descriptor_set_, 0, nullptr);
 
-  const uint32_t output_elements = uniform_data_.batch_size * uniform_data_.output_size;
-  const uint32_t group_x = (output_elements + 255) / 256;
-  vkCmdDispatch(command_buffer, group_x, 1, 1);
+  constexpr uint32_t kTileSize = 16;
+  const uint32_t group_x =
+      (static_cast<uint32_t>(uniform_data_.output_size) + kTileSize - 1) / kTileSize;
+  const uint32_t group_y =
+      (static_cast<uint32_t>(uniform_data_.batch_size) + kTileSize - 1) / kTileSize;
+  vkCmdDispatch(command_buffer, group_x, group_y, 1);
 }
 
 std::vector<core::vulkan::BindingInfo> Linear::GetBindingInfo() const {
