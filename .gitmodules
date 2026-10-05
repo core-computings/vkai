@@ -7,3 +7,6 @@
 [submodule "external/CORE"]
 	path = external/CORE
 	url = https://github.com/chuzcjoe/CORE.git
+[submodule "external/onnx"]
+	path = external/onnx
+	url = https://github.com/onnx/onnx.git

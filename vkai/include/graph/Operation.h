@@ -12,6 +12,8 @@
 namespace vkai {
 
 enum class OpType {
+  Constant,
+  Reshape,
   Dense,
   Conv2D,
   Relu,

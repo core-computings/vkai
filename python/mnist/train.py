@@ -1,12 +1,13 @@
 """
-Train a simple CNN for MNIST digit classification and export FlatBuffer weights.
+Train a simple CNN for MNIST digit classification and export inference artifacts.
 This demonstrates the training workflow described in Chapter 5.
 
 Usage:
     python python/mnist/train.py
+    python python/mnist/train.py --export-onnx
 
 Requirements:
-    pip install torch torchvision flatbuffers
+    pip install torch torchvision flatbuffers onnx
 """
 
 import argparse
@@ -32,6 +33,7 @@ from vkai.fbs import Model, Tensor
 DATA_DIR = SCRIPT_DIR / "data"
 MODEL_PATH = SCRIPT_DIR / "mnist_model.pth"
 WEIGHTS_PATH = SCRIPT_DIR / "mnist_weights.bin"
+ONNX_PATH = SCRIPT_DIR / "mnist_model.onnx"
 
 
 class MNISTNet(nn.Module):
@@ -190,6 +192,33 @@ def export_weights_binary(model, filename=WEIGHTS_PATH):
     print(f"\nWeights exported to {filename}")
 
 
+def export_onnx(model, filename=ONNX_PATH):
+    """Export the trained model as an ONNX graph with a dynamic batch dimension."""
+
+    model.eval()
+    filename = Path(filename).expanduser().resolve()
+    filename.parent.mkdir(parents=True, exist_ok=True)
+    device = next(model.parameters()).device
+    example_input = torch.zeros((1, 1, 28, 28), dtype=torch.float32, device=device)
+
+    with torch.no_grad():
+        torch.onnx.export(
+            model,
+            example_input,
+            filename,
+            dynamo=False,
+            opset_version=13,
+            input_names=["input"],
+            output_names=["logits"],
+            dynamic_axes={
+                "input": {0: "batch_size"},
+                "logits": {0: "batch_size"},
+            },
+        )
+
+    print(f"\nONNX model exported to {filename}")
+
+
 def test_inference(model, data_dir=DATA_DIR):
     """Test a single inference to verify the model works."""
 
@@ -231,6 +260,11 @@ def parse_args():
     parser.add_argument("--data-dir", type=Path, default=DATA_DIR)
     parser.add_argument("--model", type=Path, default=MODEL_PATH)
     parser.add_argument("--weights", type=Path, default=WEIGHTS_PATH)
+    parser.add_argument(
+        "--export-onnx",
+        action="store_true",
+        help=f"Export an ONNX model to {ONNX_PATH}",
+    )
     args = parser.parse_args()
     if args.epochs < 1:
         parser.error("--epochs must be at least 1")
@@ -266,11 +300,16 @@ def main():
     print("\nExporting weights for C++ inference engine:")
     export_weights_binary(model, args.weights)
 
+    if args.export_onnx:
+        export_onnx(model)
+
     print("\n" + "=" * 60)
     print("Training and export complete!")
     print("=" * 60)
     print("\nYou can now use:")
     print(f"  - {args.weights.expanduser().resolve()} for the C++ unit tests")
+    if args.export_onnx:
+        print(f"  - {ONNX_PATH.resolve()} for ONNX-compatible runtimes")
 
 
 if __name__ == "__main__":
