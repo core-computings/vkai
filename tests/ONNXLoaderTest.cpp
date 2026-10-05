@@ -17,9 +17,7 @@ TEST(ONNXLoaderTest, LoadsExportedMnistModel) {
   ASSERT_TRUE(std::filesystem::exists(onnx_path))
       << "Generate the test model with: python python/mnist/train.py --export-onnx";
 
-  Graph graph;
-  std::string error_message;
-  ASSERT_TRUE(ONNXLoader::Load(onnx_path.string(), graph, &error_message)) << error_message;
+  Graph graph = BuildGraphFromONNX(onnx_path.string());
 
   const auto input = graph.FindTensor("input");
   ASSERT_NE(input, nullptr);

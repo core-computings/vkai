@@ -14,12 +14,6 @@
 namespace vkai {
 namespace {
 
-void SetError(std::string* error_message, const std::string& message) {
-  if (error_message != nullptr) {
-    *error_message = message;
-  }
-}
-
 std::vector<int64_t> ShapeFromValueInfo(const onnx::ValueInfoProto& value_info) {
   std::vector<int64_t> shape;
   if (!value_info.has_type() || !value_info.type().has_tensor_type()) {
@@ -113,69 +107,63 @@ void ImportAttribute(const onnx::AttributeProto& attribute, Operation& operation
 
 }  // namespace
 
-bool ONNXLoader::Load(const std::string& filename, Graph& graph, std::string* error_message) {
+Graph BuildGraphFromONNX(const std::string& filename) {
   std::ifstream input(filename, std::ios::binary);
   if (!input.is_open()) {
-    SetError(error_message, "Failed to open ONNX file: " + filename);
-    return false;
+    throw std::runtime_error("Failed to open ONNX file: " + filename);
   }
 
   onnx::ModelProto model;
   if (!model.ParseFromIstream(&input) || !model.has_graph()) {
-    SetError(error_message, "Failed to parse ONNX ModelProto: " + filename);
-    return false;
+    throw std::runtime_error("Failed to parse ONNX ModelProto: " + filename);
   }
 
-  try {
-    const onnx::GraphProto& model_graph = model.graph();
-    std::unordered_set<std::string> initializer_names;
-    for (const auto& initializer : model_graph.initializer()) {
-      initializer_names.insert(initializer.name());
-      const auto tensor = GetOrAddTensor(graph, initializer.name(), ShapeFromTensor(initializer));
-      tensor->SetData(FloatData(initializer));
-    }
-
-    for (const auto& input_value : model_graph.input()) {
-      if (!initializer_names.contains(input_value.name())) {
-        graph.AddInput(GetOrAddTensor(graph, input_value.name(), ShapeFromValueInfo(input_value)));
-      }
-    }
-    for (const auto& output_value : model_graph.output()) {
-      graph.AddOutput(GetOrAddTensor(graph, output_value.name(), ShapeFromValueInfo(output_value)));
-    }
-
-    for (int node_index = 0; node_index < model_graph.node_size(); ++node_index) {
-      const onnx::NodeProto& node = model_graph.node(node_index);
-      const auto type = ToOpType(node.op_type());
-      if (!type.has_value()) {
-        throw std::runtime_error("Unsupported ONNX operator: " + node.op_type());
-      }
-
-      const std::string node_name =
-          node.name().empty() ? node.op_type() + "_" + std::to_string(node_index) : node.name();
-      const auto operation = graph.AddOperation(node_name, *type);
-      for (const std::string& input_name : node.input()) {
-        if (!input_name.empty()) {
-          operation->AddInput(GetOrAddTensor(graph, input_name));
-        }
-      }
-
-      std::vector<std::shared_ptr<Tensor>> outputs;
-      outputs.reserve(node.output_size());
-      for (const std::string& output_name : node.output()) {
-        const auto output = GetOrAddTensor(graph, output_name);
-        operation->AddOutput(output);
-        outputs.push_back(output);
-      }
-      for (const auto& attribute : node.attribute()) {
-        ImportAttribute(attribute, *operation, outputs);
-      }
-    }
-  } catch (const std::exception& error) {
-    SetError(error_message, error.what());
-    return false;
+  Graph graph;
+  const onnx::GraphProto& model_graph = model.graph();
+  std::unordered_set<std::string> initializer_names;
+  for (const auto& initializer : model_graph.initializer()) {
+    initializer_names.insert(initializer.name());
+    const auto tensor = GetOrAddTensor(graph, initializer.name(), ShapeFromTensor(initializer));
+    tensor->SetData(FloatData(initializer));
   }
-  return true;
+
+  for (const auto& input_value : model_graph.input()) {
+    if (!initializer_names.contains(input_value.name())) {
+      graph.AddInput(GetOrAddTensor(graph, input_value.name(), ShapeFromValueInfo(input_value)));
+    }
+  }
+  for (const auto& output_value : model_graph.output()) {
+    graph.AddOutput(GetOrAddTensor(graph, output_value.name(), ShapeFromValueInfo(output_value)));
+  }
+
+  for (int node_index = 0; node_index < model_graph.node_size(); ++node_index) {
+    const onnx::NodeProto& node = model_graph.node(node_index);
+    const auto type = ToOpType(node.op_type());
+    if (!type.has_value()) {
+      throw std::runtime_error("Unsupported ONNX operator: " + node.op_type());
+    }
+
+    const std::string node_name =
+        node.name().empty() ? node.op_type() + "_" + std::to_string(node_index) : node.name();
+    const auto operation = graph.AddOperation(node_name, *type);
+    for (const std::string& input_name : node.input()) {
+      if (!input_name.empty()) {
+        operation->AddInput(GetOrAddTensor(graph, input_name));
+      }
+    }
+
+    std::vector<std::shared_ptr<Tensor>> outputs;
+    outputs.reserve(node.output_size());
+    for (const std::string& output_name : node.output()) {
+      const auto output = GetOrAddTensor(graph, output_name);
+      operation->AddOutput(output);
+      outputs.push_back(output);
+    }
+    for (const auto& attribute : node.attribute()) {
+      ImportAttribute(attribute, *operation, outputs);
+    }
+  }
+  return graph;
 }
 
 }  // namespace vkai

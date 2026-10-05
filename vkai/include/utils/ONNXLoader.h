@@ -6,12 +6,9 @@
 
 namespace vkai {
 
-// Loads the float32 ONNX subset used by the exported MNIST model into the
-// engine graph representation. Unsupported ONNX operators or tensor types
-// produce a descriptive error instead of a partially executable graph.
-class ONNXLoader {
- public:
-  static bool Load(const std::string& filename, Graph& graph, std::string* error_message = nullptr);
-};
+// Builds an engine graph from the float32 ONNX subset used by the exported
+// MNIST model. Unsupported ONNX operators or tensor types throw
+// std::runtime_error.
+Graph BuildGraphFromONNX(const std::string& filename);
 
 }  // namespace vkai

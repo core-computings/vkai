@@ -1,7 +1,14 @@
 file(GLOB test_SRC CONFIGURE_DEPENDS "*.cpp")
 add_executable(vkai_unittests ${test_SRC})
 
-target_link_libraries(vkai_unittests PRIVATE vkai gtest_main vkai_flatbuffers)
+target_link_libraries(vkai_unittests PRIVATE vkai gtest_main vkai_flatbuffers onnx)
+
+# ONNX's public protobuf headers contain intentionally unused parameters. Keep
+# the exception local to the raw ONNX inspection test.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set_source_files_properties(ONNXInfoTest.cpp PROPERTIES
+        COMPILE_OPTIONS "-Wno-unused-parameter")
+endif()
 
 target_include_directories(vkai_unittests
     PRIVATE
