@@ -31,6 +31,10 @@ class Graph {
 
   const std::vector<std::shared_ptr<Operation>>& Operations() const { return operations_; }
 
+  const std::unordered_map<std::string, std::shared_ptr<Tensor>>& Tensors() const {
+    return tensors_;
+  }
+
   // Produces a stable topological order. Graph-input and constant tensors are
   // immediately available; every other input must be produced by an earlier
   // operation in the resulting order.

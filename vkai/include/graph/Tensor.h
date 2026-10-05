@@ -1,11 +1,11 @@
 #pragma once
 
-#include <vulkan/vulkan.h>
-
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
+
+#include "VulkanBuffer.h"
 
 namespace vkai {
 
@@ -23,19 +23,20 @@ class Tensor {
 
   const std::vector<float>& Data() const;
 
-  // The graph does not own the Vulkan resource. Allocation is handled by the
-  // inference executor after graph construction.
-  void SetBuffer(VkBuffer buffer);
+  // Takes ownership of a buffer allocated by the inference executor.
+  void SetBuffer(core::vulkan::VulkanBuffer&& buffer);
 
   bool HasBuffer() const { return buffer_.has_value(); }
 
-  VkBuffer Buffer() const;
+  core::vulkan::VulkanBuffer& Buffer();
+
+  const core::vulkan::VulkanBuffer& Buffer() const;
 
  private:
   std::string name_;
   std::vector<int64_t> shape_;
   std::optional<std::vector<float>> data_;
-  std::optional<VkBuffer> buffer_;
+  std::optional<core::vulkan::VulkanBuffer> buffer_;
 };
 
 }  // namespace vkai

@@ -23,9 +23,21 @@ const std::vector<float>& Tensor::Data() const {
   return *data_;
 }
 
-void Tensor::SetBuffer(VkBuffer buffer) { buffer_ = buffer; }
+void Tensor::SetBuffer(core::vulkan::VulkanBuffer&& buffer) {
+  if (!buffer_.has_value()) {
+    buffer_.emplace();
+  }
+  *buffer_ = std::move(buffer);
+}
 
-VkBuffer Tensor::Buffer() const {
+core::vulkan::VulkanBuffer& Tensor::Buffer() {
+  if (!buffer_.has_value()) {
+    throw std::logic_error("Tensor does not have a Vulkan buffer");
+  }
+  return *buffer_;
+}
+
+const core::vulkan::VulkanBuffer& Tensor::Buffer() const {
   if (!buffer_.has_value()) {
     throw std::logic_error("Tensor does not have a Vulkan buffer");
   }
