@@ -27,6 +27,8 @@ class Engine {
   // Tensors with unknown shapes are deferred until shape inference resolves them.
   void AllocateVulkanBuffers();
 
+  void UploadWeights();
+
   // Declared before graph_ so tensor buffers are destroyed before their context.
   std::unique_ptr<core::vulkan::VulkanContext> context_;
 

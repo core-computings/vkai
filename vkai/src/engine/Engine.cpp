@@ -1,5 +1,6 @@
-#include "engine/engine.h"
+#include "engine/Engine.h"
 
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -14,6 +15,7 @@ Engine::Engine(const std::string& onnx_path) : graph_(BuildGraphFromONNX(onnx_pa
   context_ = std::make_unique<core::vulkan::VulkanContext>();
   context_->Init();
   AllocateVulkanBuffers();
+  UploadWeights();
 }
 
 void Engine::AllocateVulkanBuffers() {
@@ -53,6 +55,26 @@ void Engine::AllocateVulkanBuffers() {
                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                       kHostVisibleMemory);
     tensor->SetBuffer(std::move(buffer));
+  }
+}
+
+void Engine::UploadWeights() {
+  for (const auto& [name, tensor] : graph_.Tensors()) {
+    if (!tensor->HasData() || tensor->Data().empty()) {
+      continue;
+    }
+    if (!tensor->HasBuffer()) {
+      throw std::runtime_error("Cannot upload tensor data without a Vulkan buffer: " + name);
+    }
+
+    const auto& data = tensor->Data();
+    auto& buffer = tensor->Buffer();
+    if (buffer.Size() != data.size() * sizeof(float)) {
+      throw std::runtime_error("Tensor data size does not match Vulkan buffer size: " + name);
+    }
+    buffer.MapData([&data](void* mapped_data) {
+      std::memcpy(mapped_data, data.data(), data.size() * sizeof(float));
+    });
   }
 }
 

@@ -1,10 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <filesystem>
 #include <stdexcept>
 #include <vector>
 
-#include "engine/engine.h"
+#include "engine/Engine.h"
 
 namespace vkai {
 namespace test {
@@ -41,6 +42,29 @@ TEST(EngineTest, BuildsGraphFromExportedMnistModel) {
   EXPECT_EQ(order[4]->Name(), "/fc2/Gemm");
   EXPECT_EQ(order, graph.TopologicalSort());
   EXPECT_EQ(&order, &engine.GetTopoOrder());
+}
+
+TEST(EngineTest, UploadsTensorDataToVulkanBuffers) {
+  const std::filesystem::path onnx_path =
+      std::filesystem::path(VKAI_SOURCE_DIR) / "python/mnist/mnist_model.onnx";
+  ASSERT_TRUE(std::filesystem::exists(onnx_path));
+
+  const Engine engine(onnx_path.string());
+  size_t uploaded_tensors = 0;
+  for (const auto& [name, tensor] : engine.GetGraph().Tensors()) {
+    if (!tensor->HasData() || tensor->Data().empty()) {
+      continue;
+    }
+    SCOPED_TRACE(name);
+    ASSERT_TRUE(tensor->HasBuffer());
+    const auto& data = tensor->Data();
+    ASSERT_EQ(tensor->Buffer().Size(), data.size() * sizeof(float));
+    tensor->Buffer().MapData([&data](void* mapped_data) {
+      EXPECT_EQ(std::memcmp(mapped_data, data.data(), data.size() * sizeof(float)), 0);
+    });
+    ++uploaded_tensors;
+  }
+  EXPECT_EQ(uploaded_tensors, 4U);
 }
 
 }  // namespace test
