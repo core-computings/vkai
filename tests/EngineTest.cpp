@@ -62,7 +62,7 @@ TEST(EngineTest, BuildsGraphFromExportedMnistModel) {
 TEST(EngineTest, ExecutesMnistGraph) {
   const auto model_dir = std::filesystem::path(VKAI_SOURCE_DIR) / "python/mnist";
   Engine engine((model_dir / "mnist_model.onnx").string());
-  const auto input = engine.GetInput();
+  const auto input = engine.GetInputTensor();
 
   // read input from file
   std::vector<float> input_data(784);
@@ -79,7 +79,7 @@ TEST(EngineTest, ExecutesMnistGraph) {
   // inference
   input->SetData(input_data);
   engine.ExecuteGraph();
-  const auto output = engine.GetOutput();
+  const auto output = engine.GetOutputTensor();
 
   // validate output
   for (size_t index = 0; index < reference.size(); ++index) {
