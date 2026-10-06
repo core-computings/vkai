@@ -23,6 +23,11 @@ class Engine {
 
   const Graph& GetGraph() const { return graph_; }
 
+  // Convenience accessors for the first graph input and output.
+  std::shared_ptr<Tensor> GetInput() const { return graph_.Inputs().at(0); }
+
+  std::shared_ptr<Tensor> GetOutput() const { return graph_.Outputs().at(0); }
+
   const std::vector<std::shared_ptr<Operation>>& GetTopoOrder() const { return topo_order_; }
 
   const std::unordered_map<std::string, std::unique_ptr<Layer>>& GetLayers() const {

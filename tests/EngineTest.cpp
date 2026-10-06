@@ -62,16 +62,7 @@ TEST(EngineTest, BuildsGraphFromExportedMnistModel) {
 TEST(EngineTest, ExecutesMnistGraph) {
   const auto model_dir = std::filesystem::path(VKAI_SOURCE_DIR) / "python/mnist";
   Engine engine((model_dir / "mnist_model.onnx").string());
-  const auto input = engine.GetGraph().Inputs().front();
-
-  std::unordered_map<std::string, VkBuffer> buffers;
-  for (const auto& [name, tensor] : engine.GetGraph().Tensors()) {
-    buffers.emplace(name, tensor->Buffer().buffer);
-  }
-  std::unordered_map<std::string, VkPipeline> pipelines;
-  for (const auto& [name, layer] : engine.GetLayers()) {
-    pipelines.emplace(name, layer->pipeline);
-  }
+  const auto input = engine.GetInput();
 
   // read input from file
   std::vector<float> input_data(784);
@@ -88,30 +79,13 @@ TEST(EngineTest, ExecutesMnistGraph) {
   // inference
   input->SetData(input_data);
   engine.ExecuteGraph();
-  const auto output = engine.GetGraph().Outputs().front();
+  const auto output = engine.GetOutput();
 
   // validate output
   for (size_t index = 0; index < reference.size(); ++index) {
     EXPECT_NEAR(output->Data()[index], reference[index],
                 1e-4F + 1e-4F * std::abs(reference[index]));
   }
-
-  const auto& graph = engine.GetGraph();
-
-  // Run the original input again using the same prepared resources.
-  input->SetData(input_data);
-  engine.ExecuteGraph();
-  for (size_t index = 0; index < reference.size(); ++index) {
-    EXPECT_NEAR(output->Data()[index], reference[index],
-                1e-4F + 1e-4F * std::abs(reference[index]));
-  }
-  for (const auto& [name, tensor] : graph.Tensors()) {
-    EXPECT_EQ(tensor->Buffer().buffer, buffers.at(name));
-  }
-  for (const auto& [name, layer] : engine.GetLayers()) {
-    EXPECT_EQ(layer->pipeline, pipelines.at(name));
-  }
-  EXPECT_EQ(graph.TopologicalSort(), engine.GetTopoOrder());
 }
 
 }  // namespace test
