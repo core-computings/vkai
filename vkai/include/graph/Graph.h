@@ -3,7 +3,6 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -35,9 +34,8 @@ class Graph {
     return tensors_;
   }
 
-  // Produces a stable topological order. Graph-input and constant tensors are
-  // immediately available; every other input must be produced by an earlier
-  // operation in the resulting order.
+  // Kahn's algorithm with a FIFO ready queue. Inputs without a producer must
+  // be graph inputs or have constant data. CPU data never bypasses a producer.
   std::vector<std::shared_ptr<Operation>> TopologicalSort() const;
 
  private:

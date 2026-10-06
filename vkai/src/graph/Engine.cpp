@@ -5,17 +5,10 @@
 #include <stdexcept>
 #include <utility>
 
-#include "layers/AdaptiveAvgPool2D.h"
-#include "layers/Add.h"
-#include "layers/BatchNorm2D.h"
-#include "layers/BilinearResize2D.h"
-#include "layers/ChannelConcat.h"
 #include "layers/Conv2D.h"
 #include "layers/Linear.h"
-#include "layers/MaxPool2D.h"
 #include "layers/Relu.h"
 #include "layers/Reshape.h"
-#include "layers/Softmax.h"
 #include "utils/BufferUtils.h"
 #include "utils/ONNXLoader.h"
 #include "utils/Synchronization.h"
@@ -56,42 +49,19 @@ Engine::Engine(const std::string& onnx_path) : graph_(BuildGraphFromONNX(onnx_pa
   AllocateVulkanBuffers();
   UploadWeights();
   CreatePipeline();
+
+  for (const auto& operation : topo_order_) {
+    if (layers_.contains(operation->Name())) {
+      execution_order_.push_back(operation);
+    }
+  }
 }
 
-void Engine::AllocateVulkanBuffers(bool resolve_dynamic_batch) {
-  for (const auto& [name, tensor] : graph_.Tensors()) {
-    if (tensor->HasBuffer()) {
-      continue;
-    }
-
-    const auto& shape = tensor->GetShape();
-    // An empty shape currently means missing shape information in the graph IR.
-    if (shape.empty()) {
-      continue;
-    }
-    bool has_unknown_dimension = false;
-    for (const auto dimension : shape) {
-      if (dimension == 0) {
-        has_unknown_dimension = true;
-        break;
-      }
-    }
-    if (has_unknown_dimension && !resolve_dynamic_batch) {
-      continue;
-    }
-
-    if (resolve_dynamic_batch) {
-      TensorElementCount(*tensor);
-    }
-
-    VkDeviceSize byte_size = sizeof(float);
-    for (const auto dimension : shape) {
-      const auto extent = static_cast<VkDeviceSize>(dimension == 0 ? 1 : dimension);
-      if (byte_size > std::numeric_limits<VkDeviceSize>::max() / extent) {
-        throw std::overflow_error("Tensor buffer size overflow: " + name);
-      }
-      byte_size *= extent;
-    }
+void Engine::AllocateVulkanBuffers() {
+  for (const auto& entry : graph_.Tensors()) {
+    const auto& tensor = entry.second;
+    const VkDeviceSize byte_size =
+        static_cast<VkDeviceSize>(TensorElementCount(*tensor)) * sizeof(float);
 
     core::vulkan::VulkanBuffer buffer(context_.get(), byte_size,
                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -147,14 +117,26 @@ void Engine::CreatePipeline() {
         const int batch_size =
             input_shape[0] == 0 ? 1
                                 : ToLayerDimension(input_shape[0], operation->Inputs()[0]->Name());
-        layer = std::make_unique<Linear>(context_.get(), input_size, output_size, batch_size);
+        auto linear = std::make_unique<Linear>(context_.get(), input_size, output_size, batch_size);
+        std::vector<float> bias(static_cast<size_t>(output_size), 0.0F);
+        if (operation->Inputs().size() > 2) {
+          bias = operation->Inputs()[2]->Data();
+        }
+        linear->MapWeights(operation->Inputs()[1]->Data(), bias);
+        layer = std::move(linear);
         break;
       }
-      case OpType::Conv2D:
+      case OpType::Conv2D: {
         // Conv2D attribute-to-layer mapping will be added with the first Conv2D model.
-        layer = std::make_unique<Conv2D>(context_.get(), 1, 1, 28, 28, 3, 3, 1, 1, 0, 0,
-                                         PaddingType::Zero);
+        auto conv = std::make_unique<Conv2D>(context_.get(), 1, 1, 28, 28, 3, 3, 1, 1, 0, 0,
+                                             PaddingType::Zero);
+        const auto& weights = operation->Inputs().at(1)->Data();
+        const std::vector<float> bias =
+            operation->Inputs().size() > 2 ? operation->Inputs()[2]->Data() : std::vector<float>{};
+        conv->MapWeights(weights, bias);
+        layer = std::move(conv);
         break;
+      }
       case OpType::Relu:
         if (operation->Inputs().size() != 1) {
           throw std::runtime_error("Relu operation requires one input: " + operation->Name());
@@ -164,44 +146,36 @@ void Engine::CreatePipeline() {
       default:
         throw std::runtime_error("Layer type is not configured yet: " + operation->Name());
     }
+    layer->Init();
     layers_.emplace(operation->Name(), std::move(layer));
   }
 }
 
-void Engine::ExecuteGraph() {
-  AllocateVulkanBuffers(true);
+void Engine::UploadInputs() {
   for (const auto& input : graph_.Inputs()) {
     input->Buffer().MapData([&input](void* mapped) {
       std::memcpy(mapped, input->Data().data(), input->Data().size() * sizeof(float));
     });
   }
+}
 
+void Engine::ExecuteGraph() {
+  UploadInputs();
   auto command = core::vulkan::VulkanCommandBuffer::BeginOneTimeCommands(context_.get());
-  for (const auto& operation : topo_order_) {
-    if (operation->Type() == OpType::Constant) {
-      continue;
-    }
-    auto& input = operation->Inputs().front()->Buffer();
-    auto& output = operation->Outputs().front()->Buffer();
+  for (const auto& operation : execution_order_) {
     auto& layer = *layers_.at(operation->Name());
-    if (layer.pipeline == VK_NULL_HANDLE) {
-      if (operation->Type() == OpType::Dense) {
-        const auto& weights = operation->Inputs().at(1);
-        std::vector<float> bias(static_cast<size_t>(weights->GetShape().at(0)), 0.0F);
-        if (operation->Inputs().size() > 2) {
-          bias = operation->Inputs()[2]->Data();
-        }
-        static_cast<Linear&>(layer).MapWeights(weights->Data(), bias);
-      }
-      layer.Init();
-    }
-    layer.Execute(command.buffer(), input, output);
+    layer.Execute(command.buffer(), operation->Inputs().front()->Buffer(),
+                  operation->Outputs().front()->Buffer());
     Synchronization::InsertComputeBarrier(command.buffer());
   }
   for (const auto& output : graph_.Outputs()) {
     Synchronization::InsertHostReadBarrier(command.buffer(), output->Buffer());
   }
   command.EndOneTimeCommands();
+  DownloadOutputs();
+}
+
+void Engine::DownloadOutputs() {
   for (const auto& output : graph_.Outputs()) {
     std::vector<float> data(output->Buffer().Size() / sizeof(float));
     output->Buffer().MapData(

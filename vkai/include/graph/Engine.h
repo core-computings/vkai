@@ -34,12 +34,15 @@ class Engine {
   void ExecuteGraph();
 
  private:
-  // Tensors with unknown shapes are deferred until shape inference resolves them.
-  void AllocateVulkanBuffers(bool resolve_dynamic_batch = false);
+  void AllocateVulkanBuffers();
 
   void UploadWeights();
 
   void CreatePipeline();
+
+  void UploadInputs();
+
+  void DownloadOutputs();
 
   // Declared before graph_ so tensor buffers are destroyed before their context.
   std::unique_ptr<core::vulkan::VulkanContext> context_;
@@ -47,6 +50,9 @@ class Engine {
   Graph graph_;
 
   std::vector<std::shared_ptr<Operation>> topo_order_;
+
+  // Only operations with runtime layers, in dependency order.
+  std::vector<std::shared_ptr<Operation>> execution_order_;
 
   std::unordered_map<std::string, std::unique_ptr<Layer>> layers_;
 };

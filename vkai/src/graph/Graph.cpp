@@ -1,5 +1,6 @@
 #include "graph/Graph.h"
 
+#include <queue>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -46,13 +47,12 @@ std::shared_ptr<Operation> Graph::FindOperation(const std::string& name) const {
 }
 
 std::vector<std::shared_ptr<Operation>> Graph::TopologicalSort() const {
-  std::unordered_map<const Tensor*, const Operation*> producers;
-  for (const auto& operation : operations_) {
+  std::unordered_map<const Tensor*, size_t> producers;
+  for (size_t index = 0; index < operations_.size(); ++index) {
+    const auto& operation = operations_[index];
     for (const auto& output : operation->Outputs()) {
       ValidateTensor(output);
-      const auto [producer, inserted] = producers.emplace(output.get(), operation.get());
-      static_cast<void>(producer);
-      if (!inserted) {
+      if (!producers.emplace(output.get(), index).second) {
         throw std::logic_error("A tensor has more than one producing operation: " + output->Name());
       }
     }
@@ -61,47 +61,47 @@ std::vector<std::shared_ptr<Operation>> Graph::TopologicalSort() const {
     }
   }
 
-  std::unordered_set<const Tensor*> available;
+  std::unordered_set<const Tensor*> graph_inputs;
   for (const auto& input : inputs_) {
-    available.insert(input.get());
+    graph_inputs.insert(input.get());
   }
-  for (const auto& entry : tensors_) {
-    if (entry.second->HasData()) {
-      available.insert(entry.second.get());
+
+  // Each input edge adds one dependency, including repeated inputs.
+  std::vector<size_t> indegree(operations_.size(), 0);
+  std::vector<std::vector<size_t>> consumers(operations_.size());
+  for (size_t index = 0; index < operations_.size(); ++index) {
+    for (const auto& input : operations_[index]->Inputs()) {
+      const auto producer = producers.find(input.get());
+      if (producer != producers.end()) {
+        ++indegree[index];
+        consumers[producer->second].push_back(index);
+      } else if (!graph_inputs.contains(input.get()) && !input->HasData()) {
+        throw std::logic_error("Graph input has no producer or data: " + input->Name());
+      }
     }
   }
 
-  std::unordered_set<const Operation*> executed;
+  std::queue<size_t> ready;
+  for (size_t index = 0; index < operations_.size(); ++index) {
+    if (indegree[index] == 0) {
+      ready.push(index);
+    }
+  }
+
   std::vector<std::shared_ptr<Operation>> ordered;
   ordered.reserve(operations_.size());
-  while (ordered.size() != operations_.size()) {
-    bool made_progress = false;
-    for (const auto& operation : operations_) {
-      if (executed.contains(operation.get())) {
-        continue;
+  while (!ready.empty()) {
+    const size_t index = ready.front();
+    ready.pop();
+    ordered.push_back(operations_[index]);
+    for (const size_t consumer : consumers[index]) {
+      if (--indegree[consumer] == 0) {
+        ready.push(consumer);
       }
-
-      bool ready = true;
-      for (const auto& input : operation->Inputs()) {
-        if (!available.contains(input.get())) {
-          ready = false;
-          break;
-        }
-      }
-      if (!ready) {
-        continue;
-      }
-
-      executed.insert(operation.get());
-      ordered.push_back(operation);
-      for (const auto& output : operation->Outputs()) {
-        available.insert(output.get());
-      }
-      made_progress = true;
     }
-    if (!made_progress) {
-      throw std::logic_error("Graph has a cycle or an input without a producer");
-    }
+  }
+  if (ordered.size() != operations_.size()) {
+    throw std::logic_error("Graph has a cycle");
   }
   return ordered;
 }
