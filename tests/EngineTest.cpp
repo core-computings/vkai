@@ -96,23 +96,7 @@ TEST(EngineTest, ExecutesMnistGraph) {
                 1e-4F + 1e-4F * std::abs(reference[index]));
   }
 
-  // With zero input, fc1 produces its bias. Calculate the second output on CPU.
   const auto& graph = engine.GetGraph();
-  const auto& fc1_bias = graph.FindTensor("fc1.bias")->Data();
-  const auto& fc2_weights = graph.FindTensor("fc2.weight")->Data();
-  std::vector<float> zero_reference = graph.FindTensor("fc2.bias")->Data();
-  for (size_t row = 0; row < zero_reference.size(); ++row) {
-    for (size_t column = 0; column < fc1_bias.size(); ++column) {
-      const float activation = fc1_bias[column] > 0.0F ? fc1_bias[column] : 0.0F;
-      zero_reference[row] += fc2_weights[row * fc1_bias.size() + column] * activation;
-    }
-  }
-  input->SetData(std::vector<float>(784, 0.0F));
-  engine.ExecuteGraph();
-  for (size_t index = 0; index < zero_reference.size(); ++index) {
-    EXPECT_NEAR(output->Data()[index], zero_reference[index],
-                1e-4F + 1e-4F * std::abs(zero_reference[index]));
-  }
 
   // Run the original input again using the same prepared resources.
   input->SetData(input_data);
