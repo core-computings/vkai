@@ -93,12 +93,12 @@ void ImportAttribute(const onnx::AttributeProto& attribute, Operation& operation
     if (tensor.data_type() == onnx::TensorProto::FLOAT) {
       operation.SetAttribute(attribute.name(), FloatData(tensor));
       for (const auto& output : outputs) {
-        output->SetData({});
+        output->PopulateTensor({});
       }
     } else if (tensor.data_type() == onnx::TensorProto::INT64) {
       operation.SetAttribute(attribute.name(), Int64Data(tensor));
       for (const auto& output : outputs) {
-        output->SetData({});
+        output->PopulateTensor({});
       }
     } else {
       throw std::runtime_error("Unsupported ONNX constant tensor type");
@@ -131,7 +131,7 @@ Graph BuildGraphFromONNX(const std::string& filename) {
   for (const auto& initializer : model_graph.initializer()) {
     initializer_names.insert(initializer.name());
     const auto tensor = AddTensor(graph, initializer.name(), ShapeFromTensor(initializer));
-    tensor->SetData(FloatData(initializer));
+    tensor->PopulateTensor(FloatData(initializer));
   }
 
   // input tensors

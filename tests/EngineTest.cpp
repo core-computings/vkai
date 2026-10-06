@@ -77,7 +77,7 @@ TEST(EngineTest, ExecutesMnistGraph) {
                                   static_cast<std::streamsize>(reference.size() * sizeof(float))));
 
   // inference
-  input->SetData(input_data);
+  input->PopulateTensor(input_data);
   engine.ExecuteGraph();
   const auto output = engine.GetOutputTensor();
 

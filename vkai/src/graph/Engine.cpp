@@ -180,7 +180,7 @@ void Engine::DownloadOutputs() {
     std::vector<float> data(output->Buffer().Size() / sizeof(float));
     output->Buffer().MapData(
         [&data](void* mapped) { std::memcpy(data.data(), mapped, data.size() * sizeof(float)); });
-    output->SetData(std::move(data));
+    output->PopulateTensor(std::move(data));
   }
 }
 

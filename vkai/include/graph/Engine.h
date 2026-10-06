@@ -34,7 +34,7 @@ class Engine {
     return layers_;
   }
 
-  // Call SetData() on graph input tensors first. Executes synchronously and
+  // Call PopulateTensor() on graph input tensors first. Executes synchronously and
   // stores results in graph output tensor Data(). Dynamic batch defaults to 1.
   void ExecuteGraph();
 

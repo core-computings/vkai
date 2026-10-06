@@ -23,8 +23,8 @@ TEST(GraphTest, TopologicalSortPrintsExecutionOrder) {
   const auto probabilities = graph.AddTensor("probabilities", {1, 128});
   graph.AddInput(input);
   graph.AddOutput(probabilities);
-  weights->SetData({0.25F});
-  bias->SetData({0.0F});
+  weights->PopulateTensor({0.25F});
+  bias->PopulateTensor({0.0F});
 
   // Add operations in reverse dependency order to verify the sort is based on
   // tensor dependencies rather than graph construction order.
@@ -96,8 +96,8 @@ TEST(GraphTest, RepeatedInputsAndCpuDataDoNotBypassProducer) {
   const auto output = graph.AddTensor("output", {1});
   graph.AddInput(input);
   // CPU data left by an earlier inference must not remove the dependency.
-  intermediate->SetData({1.0F});
-  output->SetData({2.0F});
+  intermediate->PopulateTensor({1.0F});
+  output->PopulateTensor({2.0F});
 
   const auto add = graph.AddOperation("add", OpType::Add);
   add->AddInput(intermediate);
@@ -115,8 +115,8 @@ TEST(GraphTest, RejectsCycleEvenWhenTensorsHaveCpuData) {
   Graph graph;
   const auto a = graph.AddTensor("a", {1});
   const auto b = graph.AddTensor("b", {1});
-  a->SetData({1.0F});
-  b->SetData({2.0F});
+  a->PopulateTensor({1.0F});
+  b->PopulateTensor({2.0F});
   const auto first = graph.AddOperation("first", OpType::Relu);
   first->AddInput(b);
   first->AddOutput(a);

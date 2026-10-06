@@ -14,7 +14,7 @@ Tensor::Tensor(std::string name, std::vector<int64_t> shape)
   }
 }
 
-void Tensor::SetData(std::vector<float> data) { data_ = std::move(data); }
+void Tensor::PopulateTensor(std::vector<float> data) { data_ = std::move(data); }
 
 const std::vector<float>& Tensor::Data() const {
   if (!data_.has_value()) {

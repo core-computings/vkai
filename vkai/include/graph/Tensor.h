@@ -17,7 +17,7 @@ class Tensor {
 
   const std::vector<int64_t>& GetShape() const { return shape_; }
 
-  void SetData(std::vector<float> data);
+  void PopulateTensor(std::vector<float> data);
 
   bool HasData() const { return data_.has_value(); }
 
