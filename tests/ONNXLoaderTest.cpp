@@ -29,6 +29,10 @@ TEST(ONNXLoaderTest, LoadsExportedMnistModel) {
   EXPECT_EQ(fc1_weights->GetShape(), (std::vector<int64_t>{128, 784}));
   EXPECT_EQ(fc1_weights->Data().size(), 128U * 784U);
 
+  const auto fc1_output = graph.FindTensor("/fc1/Gemm_output_0");
+  ASSERT_NE(fc1_output, nullptr);
+  EXPECT_EQ(fc1_output->GetShape(), (std::vector<int64_t>{0, 128}));
+
   ASSERT_EQ(graph.Operations().size(), 5U);
   const auto order = graph.TopologicalSort();
   ASSERT_EQ(order.size(), 5U);

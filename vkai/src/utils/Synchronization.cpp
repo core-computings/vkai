@@ -18,7 +18,7 @@ void Synchronization::InsertHostReadBarrier(const VkCommandBuffer& command_buffe
                                             const core::vulkan::VulkanBuffer& buffer) {
   const VkBufferMemoryBarrier barrier{
       .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-      .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+      .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
       .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
       .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -27,7 +27,8 @@ void Synchronization::InsertHostReadBarrier(const VkCommandBuffer& command_buffe
       .size = VK_WHOLE_SIZE,
   };
 
-  vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+  vkCmdPipelineBarrier(command_buffer,
+                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                        VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &barrier, 0, nullptr);
 }
 

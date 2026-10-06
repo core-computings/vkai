@@ -1,11 +1,11 @@
 #include <gtest/gtest.h>
 
-#include <cstring>
+#include <cmath>
 #include <filesystem>
-#include <stdexcept>
+#include <fstream>
 #include <vector>
 
-#include "engine/Engine.h"
+#include "graph/Engine.h"
 
 namespace vkai {
 namespace test {
@@ -44,27 +44,33 @@ TEST(EngineTest, BuildsGraphFromExportedMnistModel) {
   EXPECT_EQ(&order, &engine.GetTopoOrder());
 }
 
-TEST(EngineTest, UploadsTensorDataToVulkanBuffers) {
-  const std::filesystem::path onnx_path =
-      std::filesystem::path(VKAI_SOURCE_DIR) / "python/mnist/mnist_model.onnx";
-  ASSERT_TRUE(std::filesystem::exists(onnx_path));
+TEST(EngineTest, ExecutesMnistGraph) {
+  const auto model_dir = std::filesystem::path(VKAI_SOURCE_DIR) / "python/mnist";
+  Engine engine((model_dir / "mnist_model.onnx").string());
+  const auto input = engine.GetGraph().Inputs().front();
 
-  const Engine engine(onnx_path.string());
-  size_t uploaded_tensors = 0;
-  for (const auto& [name, tensor] : engine.GetGraph().Tensors()) {
-    if (!tensor->HasData() || tensor->Data().empty()) {
-      continue;
-    }
-    SCOPED_TRACE(name);
-    ASSERT_TRUE(tensor->HasBuffer());
-    const auto& data = tensor->Data();
-    ASSERT_EQ(tensor->Buffer().Size(), data.size() * sizeof(float));
-    tensor->Buffer().MapData([&data](void* mapped_data) {
-      EXPECT_EQ(std::memcmp(mapped_data, data.data(), data.size() * sizeof(float)), 0);
-    });
-    ++uploaded_tensors;
+  // read input from file
+  std::vector<float> input_data(784);
+  std::ifstream input_file(model_dir / "test_data/input.bin", std::ios::binary);
+  ASSERT_TRUE(input_file.read(reinterpret_cast<char*>(input_data.data()),
+                              static_cast<std::streamsize>(input_data.size() * sizeof(float))));
+
+  // read reference output from file
+  std::vector<float> reference(10);
+  std::ifstream reference_file(model_dir / "test_data/fc2_output.bin", std::ios::binary);
+  ASSERT_TRUE(reference_file.read(reinterpret_cast<char*>(reference.data()),
+                                  static_cast<std::streamsize>(reference.size() * sizeof(float))));
+
+  // inference
+  input->SetData(input_data);
+  engine.ExecuteGraph();
+  const auto output = engine.GetGraph().Outputs().front();
+
+  // validate output
+  for (size_t index = 0; index < reference.size(); ++index) {
+    EXPECT_NEAR(output->Data()[index], reference[index],
+                1e-4F + 1e-4F * std::abs(reference[index]));
   }
-  EXPECT_EQ(uploaded_tensors, 4U);
 }
 
 }  // namespace test

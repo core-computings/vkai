@@ -1,6 +1,7 @@
 #include "utils/ONNXLoader.h"
 
 #include <onnx/onnx_pb.h>
+#include <onnx/shape_inference/implementation.h>
 
 #include <cstring>
 #include <fstream>
@@ -63,7 +64,7 @@ std::vector<int64_t> Int64Data(const onnx::TensorProto& tensor) {
   return {tensor.int64_data().begin(), tensor.int64_data().end()};
 }
 
-std::optional<OpType> ToOpType(const std::string& onnx_type) {
+std::optional<OpType> GetOpType(const std::string& onnx_type) {
   static const std::unordered_map<std::string, OpType> kTypes = {
       {"Constant", OpType::Constant}, {"Reshape", OpType::Reshape}, {"Gemm", OpType::Dense},
       {"Relu", OpType::Relu},         {"Conv", OpType::Conv2D},     {"MaxPool", OpType::MaxPool2D},
@@ -73,8 +74,8 @@ std::optional<OpType> ToOpType(const std::string& onnx_type) {
   return it == kTypes.end() ? std::nullopt : std::optional<OpType>(it->second);
 }
 
-std::shared_ptr<Tensor> GetOrAddTensor(Graph& graph, const std::string& name,
-                                       std::vector<int64_t> shape = {}) {
+std::shared_ptr<Tensor> AddTensor(Graph& graph, const std::string& name,
+                                  std::vector<int64_t> shape = {}) {
   const auto tensor = graph.FindTensor(name);
   return tensor == nullptr ? graph.AddTensor(name, std::move(shape)) : tensor;
 }
@@ -117,45 +118,60 @@ Graph BuildGraphFromONNX(const std::string& filename) {
   if (!model.ParseFromIstream(&input) || !model.has_graph()) {
     throw std::runtime_error("Failed to parse ONNX ModelProto: " + filename);
   }
+  try {
+    onnx::shape_inference::InferShapes(model);
+  } catch (const std::exception& exception) {
+    throw std::runtime_error("Failed to infer ONNX shapes: " + std::string(exception.what()));
+  }
 
   Graph graph;
   const onnx::GraphProto& model_graph = model.graph();
   std::unordered_set<std::string> initializer_names;
+  // weights tensors
   for (const auto& initializer : model_graph.initializer()) {
     initializer_names.insert(initializer.name());
-    const auto tensor = GetOrAddTensor(graph, initializer.name(), ShapeFromTensor(initializer));
+    const auto tensor = AddTensor(graph, initializer.name(), ShapeFromTensor(initializer));
     tensor->SetData(FloatData(initializer));
   }
 
+  // input tensors
   for (const auto& input_value : model_graph.input()) {
     if (!initializer_names.contains(input_value.name())) {
-      graph.AddInput(GetOrAddTensor(graph, input_value.name(), ShapeFromValueInfo(input_value)));
+      graph.AddInput(AddTensor(graph, input_value.name(), ShapeFromValueInfo(input_value)));
     }
   }
-  for (const auto& output_value : model_graph.output()) {
-    graph.AddOutput(GetOrAddTensor(graph, output_value.name(), ShapeFromValueInfo(output_value)));
+
+  // intermediate tensors
+  for (const auto& value_info : model_graph.value_info()) {
+    AddTensor(graph, value_info.name(), ShapeFromValueInfo(value_info));
   }
 
-  for (int node_index = 0; node_index < model_graph.node_size(); ++node_index) {
-    const onnx::NodeProto& node = model_graph.node(node_index);
-    const auto type = ToOpType(node.op_type());
+  // output tensors
+  for (const auto& output_value : model_graph.output()) {
+    graph.AddOutput(AddTensor(graph, output_value.name(), ShapeFromValueInfo(output_value)));
+  }
+
+  // operations
+  for (int idx = 0; idx < model_graph.node_size(); ++idx) {
+    const onnx::NodeProto& node = model_graph.node(idx);
+    const auto type = GetOpType(node.op_type());
     if (!type.has_value()) {
       throw std::runtime_error("Unsupported ONNX operator: " + node.op_type());
     }
 
     const std::string node_name =
-        node.name().empty() ? node.op_type() + "_" + std::to_string(node_index) : node.name();
+        node.name().empty() ? node.op_type() + "_" + std::to_string(idx) : node.name();
     const auto operation = graph.AddOperation(node_name, *type);
     for (const std::string& input_name : node.input()) {
       if (!input_name.empty()) {
-        operation->AddInput(GetOrAddTensor(graph, input_name));
+        operation->AddInput(AddTensor(graph, input_name));
       }
     }
 
     std::vector<std::shared_ptr<Tensor>> outputs;
     outputs.reserve(node.output_size());
     for (const std::string& output_name : node.output()) {
-      const auto output = GetOrAddTensor(graph, output_name);
+      const auto output = AddTensor(graph, output_name);
       operation->AddOutput(output);
       outputs.push_back(output);
     }

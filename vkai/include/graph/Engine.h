@@ -2,9 +2,11 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "graph/Graph.h"
+#include "layers/Layer.h"
 
 namespace vkai {
 
@@ -23,11 +25,21 @@ class Engine {
 
   const std::vector<std::shared_ptr<Operation>>& GetTopoOrder() const { return topo_order_; }
 
+  const std::unordered_map<std::string, std::unique_ptr<Layer>>& GetLayers() const {
+    return layers_;
+  }
+
+  // Call SetData() on graph input tensors first. Executes synchronously and
+  // stores results in graph output tensor Data(). Dynamic batch defaults to 1.
+  void ExecuteGraph();
+
  private:
   // Tensors with unknown shapes are deferred until shape inference resolves them.
-  void AllocateVulkanBuffers();
+  void AllocateVulkanBuffers(bool resolve_dynamic_batch = false);
 
   void UploadWeights();
+
+  void CreatePipeline();
 
   // Declared before graph_ so tensor buffers are destroyed before their context.
   std::unique_ptr<core::vulkan::VulkanContext> context_;
@@ -35,6 +47,8 @@ class Engine {
   Graph graph_;
 
   std::vector<std::shared_ptr<Operation>> topo_order_;
+
+  std::unordered_map<std::string, std::unique_ptr<Layer>> layers_;
 };
 
 }  // namespace vkai
