@@ -53,6 +53,11 @@ class Operation {
     return it == attributes_.end() ? nullptr : std::any_cast<T>(&it->second);
   }
 
+  template <typename T>
+  const T& GetAttribute(const std::string& name) const {
+    return std::any_cast<const T&>(attributes_.at(name));
+  }
+
   bool HasAttribute(const std::string& name) const { return attributes_.contains(name); }
 
  private:

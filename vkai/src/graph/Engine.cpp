@@ -1,7 +1,6 @@
 #include "graph/Engine.h"
 
 #include <cstring>
-#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -12,35 +11,9 @@
 #include "utils/BufferUtils.h"
 #include "utils/ONNXLoader.h"
 #include "utils/Synchronization.h"
+#include "utils/TensorUtils.h"
 
 namespace vkai {
-namespace {
-
-int ToLayerDimension(const int64_t dimension, const std::string& tensor_name) {
-  if (dimension <= 0 || dimension > std::numeric_limits<int>::max()) {
-    throw std::runtime_error("Tensor has an unsupported dimension: " + tensor_name);
-  }
-  return static_cast<int>(dimension);
-}
-
-int TensorElementCount(const Tensor& tensor) {
-  if (tensor.GetShape().empty()) {
-    throw std::runtime_error("Tensor shape is missing: " + tensor.Name());
-  }
-  int element_count = 1;
-  for (size_t index = 0; index < tensor.GetShape().size(); ++index) {
-    const int64_t dimension = tensor.GetShape()[index];
-    const int extent =
-        index == 0 && dimension == 0 ? 1 : ToLayerDimension(dimension, tensor.Name());
-    if (element_count > std::numeric_limits<int>::max() / extent) {
-      throw std::runtime_error("Tensor has too many elements: " + tensor.Name());
-    }
-    element_count *= extent;
-  }
-  return element_count;
-}
-
-}  // namespace
 
 Engine::Engine(const std::string& onnx_path) : graph_(BuildGraphFromONNX(onnx_path)) {
   topo_order_ = graph_.TopologicalSort();
@@ -101,23 +74,14 @@ void Engine::CreatePipeline() {
       case OpType::Reshape:
         layer = std::make_unique<Reshape>(context_.get());
         break;
+        // clang-format off
       case OpType::Dense: {
-        if (operation->Inputs().size() < 2) {
-          throw std::runtime_error("Linear operation requires an activation and weights: " +
-                                   operation->Name());
-        }
-        const auto& input_shape = operation->Inputs()[0]->GetShape();
-        const auto& weight_shape = operation->Inputs()[1]->GetShape();
-        if (input_shape.size() != 2 || weight_shape.size() != 2) {
-          throw std::runtime_error("Linear operation requires rank-2 input and weights: " +
-                                   operation->Name());
-        }
-        const int input_size = ToLayerDimension(input_shape[1], operation->Inputs()[0]->Name());
-        const int output_size = ToLayerDimension(weight_shape[0], operation->Inputs()[1]->Name());
-        const int batch_size =
-            input_shape[0] == 0 ? 1
-                                : ToLayerDimension(input_shape[0], operation->Inputs()[0]->Name());
-        auto linear = std::make_unique<Linear>(context_.get(), input_size, output_size, batch_size);
+        auto linear = std::make_unique<Linear>(
+            context_.get(), 
+            operation->GetAttribute<int>("input_size"),
+            operation->GetAttribute<int>("output_size"), 
+            operation->GetAttribute<int>("batch_size"));
+        const int output_size = operation->GetAttribute<int>("output_size");
         std::vector<float> bias(static_cast<size_t>(output_size), 0.0F);
         if (operation->Inputs().size() > 2) {
           bias = operation->Inputs()[2]->Data();
@@ -126,6 +90,7 @@ void Engine::CreatePipeline() {
         layer = std::move(linear);
         break;
       }
+      // clang-format on
       case OpType::Conv2D: {
         // Conv2D attribute-to-layer mapping will be added with the first Conv2D model.
         auto conv = std::make_unique<Conv2D>(context_.get(), 1, 1, 28, 28, 3, 3, 1, 1, 0, 0,
@@ -138,10 +103,8 @@ void Engine::CreatePipeline() {
         break;
       }
       case OpType::Relu:
-        if (operation->Inputs().size() != 1) {
-          throw std::runtime_error("Relu operation requires one input: " + operation->Name());
-        }
-        layer = std::make_unique<Relu>(context_.get(), TensorElementCount(*operation->Inputs()[0]));
+        layer =
+            std::make_unique<Relu>(context_.get(), operation->GetAttribute<int>("element_count"));
         break;
       default:
         throw std::runtime_error("Layer type is not configured yet: " + operation->Name());

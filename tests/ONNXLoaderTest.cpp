@@ -33,6 +33,26 @@ TEST(ONNXLoaderTest, LoadsExportedMnistModel) {
   ASSERT_NE(fc1_output, nullptr);
   EXPECT_EQ(fc1_output->GetShape(), (std::vector<int64_t>{0, 128}));
 
+  const auto fc1 = graph.FindOperation("/fc1/Gemm");
+  ASSERT_NE(fc1, nullptr);
+  EXPECT_EQ(fc1->GetAttribute<int>("input_size"), 784);
+  EXPECT_EQ(fc1->GetAttribute<int>("output_size"), 128);
+  EXPECT_EQ(fc1->GetAttribute<int>("batch_size"), 1);
+  // Original ONNX attributes retain their original types and values.
+  EXPECT_FLOAT_EQ(fc1->GetAttribute<float>("alpha"), 1.0F);
+  EXPECT_FLOAT_EQ(fc1->GetAttribute<float>("beta"), 1.0F);
+  EXPECT_EQ(fc1->GetAttribute<int64_t>("transB"), 1);
+
+  const auto fc2 = graph.FindOperation("/fc2/Gemm");
+  ASSERT_NE(fc2, nullptr);
+  EXPECT_EQ(fc2->GetAttribute<int>("input_size"), 128);
+  EXPECT_EQ(fc2->GetAttribute<int>("output_size"), 10);
+  EXPECT_EQ(fc2->GetAttribute<int>("batch_size"), 1);
+
+  const auto relu = graph.FindOperation("/relu/Relu");
+  ASSERT_NE(relu, nullptr);
+  EXPECT_EQ(relu->GetAttribute<int>("element_count"), 128);
+
   ASSERT_EQ(graph.Operations().size(), 5U);
   const auto order = graph.TopologicalSort();
   ASSERT_EQ(order.size(), 5U);

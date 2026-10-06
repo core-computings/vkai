@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include "utils/TensorUtils.h"
+
 namespace vkai {
 namespace {
 
@@ -106,6 +108,39 @@ void ImportAttribute(const onnx::AttributeProto& attribute, Operation& operation
   }
 }
 
+// Normalize shape-derived parameters once so the engine can directly create layers.
+void ImportLayerParameters(Operation& operation) {
+  const auto& inputs = operation.Inputs();
+  switch (operation.Type()) {
+    case OpType::Dense: {
+      if (inputs.size() < 2) {
+        throw std::runtime_error("Linear operation requires an activation and weights: " +
+                                 operation.Name());
+      }
+      const auto& input_shape = inputs[0]->GetShape();
+      const auto& weight_shape = inputs[1]->GetShape();
+      if (input_shape.size() != 2 || weight_shape.size() != 2) {
+        throw std::runtime_error("Linear operation requires rank-2 input and weights: " +
+                                 operation.Name());
+      }
+      operation.SetAttribute("input_size", ToLayerDimension(input_shape[1], inputs[0]->Name()));
+      operation.SetAttribute("output_size", ToLayerDimension(weight_shape[0], inputs[1]->Name()));
+      const int batch_size =
+          input_shape[0] == 0 ? 1 : ToLayerDimension(input_shape[0], inputs[0]->Name());
+      operation.SetAttribute("batch_size", batch_size);
+      break;
+    }
+    case OpType::Relu:
+      if (inputs.size() != 1) {
+        throw std::runtime_error("Relu operation requires one input: " + operation.Name());
+      }
+      operation.SetAttribute("element_count", TensorElementCount(*inputs[0]));
+      break;
+    default:
+      break;
+  }
+}
+
 }  // namespace
 
 Graph BuildGraphFromONNX(const std::string& filename) {
@@ -178,6 +213,7 @@ Graph BuildGraphFromONNX(const std::string& filename) {
     for (const auto& attribute : node.attribute()) {
       ImportAttribute(attribute, *operation, outputs);
     }
+    ImportLayerParameters(*operation);
   }
   return graph;
 }
