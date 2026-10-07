@@ -34,11 +34,15 @@ class Operation {
 
   OpType Type() const { return type_; }
 
-  void AddInput(const std::shared_ptr<Tensor>& tensor);
+  void AddInput(const std::string& role, const std::shared_ptr<Tensor>& tensor);
 
   void AddOutput(const std::shared_ptr<Tensor>& tensor);
 
-  const std::vector<std::shared_ptr<Tensor>>& Inputs() const { return inputs_; }
+  const std::unordered_map<std::string, std::shared_ptr<Tensor>>& Inputs() const { return inputs_; }
+
+  std::shared_ptr<Tensor> GetInput(const std::string& role) const { return inputs_.at(role); }
+
+  bool HasInput(const std::string& role) const { return inputs_.contains(role); }
 
   const std::vector<std::shared_ptr<Tensor>>& Outputs() const { return outputs_; }
 
@@ -63,7 +67,8 @@ class Operation {
  private:
   std::string name_;
   OpType type_;
-  std::vector<std::shared_ptr<Tensor>> inputs_;
+  // Keys describe the tensor's role, such as input, weights, bias, or shape.
+  std::unordered_map<std::string, std::shared_ptr<Tensor>> inputs_;
   std::vector<std::shared_ptr<Tensor>> outputs_;
   std::unordered_map<std::string, std::any> attributes_;
 };

@@ -29,22 +29,22 @@ TEST(GraphTest, TopologicalSortPrintsExecutionOrder) {
   // Add operations in reverse dependency order to verify the sort is based on
   // tensor dependencies rather than graph construction order.
   const auto softmax = graph.AddOperation("softmax", OpType::Softmax);
-  softmax->AddInput(merged_output);
+  softmax->AddInput("input", merged_output);
   softmax->AddOutput(probabilities);
 
   const auto add = graph.AddOperation("residual_add", OpType::Add);
-  add->AddInput(relu_output);
-  add->AddInput(fc1_output);
+  add->AddInput("input", relu_output);
+  add->AddInput("addend", fc1_output);
   add->AddOutput(merged_output);
 
   const auto relu = graph.AddOperation("relu", OpType::Relu);
-  relu->AddInput(fc1_output);
+  relu->AddInput("input", fc1_output);
   relu->AddOutput(relu_output);
 
   const auto dense = graph.AddOperation("fc1", OpType::Dense);
-  dense->AddInput(input);
-  dense->AddInput(weights);
-  dense->AddInput(bias);
+  dense->AddInput("input", input);
+  dense->AddInput("weights", weights);
+  dense->AddInput("bias", bias);
   dense->AddOutput(fc1_output);
   dense->SetAttribute("activation", std::string("none"));
 
@@ -56,6 +56,11 @@ TEST(GraphTest, TopologicalSortPrintsExecutionOrder) {
   EXPECT_EQ(order[3]->Name(), "softmax");
   ASSERT_NE(dense->FindAttribute<std::string>("activation"), nullptr);
   EXPECT_EQ(*dense->FindAttribute<std::string>("activation"), "none");
+  EXPECT_EQ(dense->GetInput("input"), input);
+  EXPECT_EQ(dense->GetInput("weights"), weights);
+  EXPECT_EQ(dense->GetInput("bias"), bias);
+  EXPECT_FALSE(relu->HasInput("bias"));
+  EXPECT_THROW(relu->GetInput("bias"), std::out_of_range);
 
   std::cout << "Topological order: ";
   for (size_t index = 0; index < order.size(); ++index) {
@@ -74,14 +79,14 @@ TEST(GraphTest, OrdersBranchesBeforeTheirMerge) {
   graph.AddOutput(output);
 
   const auto merge = graph.AddOperation("merge", OpType::Add);
-  merge->AddInput(left_output);
-  merge->AddInput(right_output);
+  merge->AddInput("input", left_output);
+  merge->AddInput("addend", right_output);
   merge->AddOutput(output);
   const auto left = graph.AddOperation("left", OpType::Relu);
-  left->AddInput(input);
+  left->AddInput("input", input);
   left->AddOutput(left_output);
   const auto right = graph.AddOperation("right", OpType::Relu);
-  right->AddInput(input);
+  right->AddInput("input", input);
   right->AddOutput(right_output);
 
   const std::vector<std::shared_ptr<Operation>> expected{left, right, merge};
@@ -100,15 +105,16 @@ TEST(GraphTest, RepeatedInputsAndCpuDataDoNotBypassProducer) {
   output->PopulateTensor({2.0F});
 
   const auto add = graph.AddOperation("add", OpType::Add);
-  add->AddInput(intermediate);
-  add->AddInput(intermediate);
+  add->AddInput("input", intermediate);
+  add->AddInput("addend", intermediate);
   add->AddOutput(output);
   const auto relu = graph.AddOperation("relu", OpType::Relu);
-  relu->AddInput(input);
+  relu->AddInput("input", input);
   relu->AddOutput(intermediate);
 
   const std::vector<std::shared_ptr<Operation>> expected{relu, add};
   EXPECT_EQ(graph.TopologicalSort(), expected);
+  EXPECT_EQ(add->GetInput("input"), add->GetInput("addend"));
 }
 
 TEST(GraphTest, RejectsCycleEvenWhenTensorsHaveCpuData) {
@@ -118,10 +124,10 @@ TEST(GraphTest, RejectsCycleEvenWhenTensorsHaveCpuData) {
   a->PopulateTensor({1.0F});
   b->PopulateTensor({2.0F});
   const auto first = graph.AddOperation("first", OpType::Relu);
-  first->AddInput(b);
+  first->AddInput("input", b);
   first->AddOutput(a);
   const auto second = graph.AddOperation("second", OpType::Relu);
-  second->AddInput(a);
+  second->AddInput("input", a);
   second->AddOutput(b);
 
   EXPECT_THROW(graph.TopologicalSort(), std::logic_error);
@@ -132,7 +138,7 @@ TEST(GraphTest, RejectsInputWithoutProducerOrData) {
   const auto missing = graph.AddTensor("missing", {1});
   const auto output = graph.AddTensor("output", {1});
   const auto relu = graph.AddOperation("relu", OpType::Relu);
-  relu->AddInput(missing);
+  relu->AddInput("input", missing);
   relu->AddOutput(output);
 
   EXPECT_THROW(graph.TopologicalSort(), std::logic_error);
@@ -151,8 +157,19 @@ TEST(GraphTest, RejectsTensorFromAnotherGraph) {
   Graph graph;
   Graph other;
   const auto foreign = other.AddTensor("foreign", {1});
-  graph.AddOperation("relu", OpType::Relu)->AddInput(foreign);
+  graph.AddOperation("relu", OpType::Relu)->AddInput("input", foreign);
   EXPECT_THROW(graph.TopologicalSort(), std::invalid_argument);
+}
+
+TEST(GraphTest, RejectsDuplicateInputRoles) {
+  Graph graph;
+  const auto first = graph.AddTensor("first", {1});
+  const auto second = graph.AddTensor("second", {1});
+  const auto operation = graph.AddOperation("add", OpType::Add);
+  operation->AddInput("input", first);
+
+  EXPECT_THROW(operation->AddInput("input", second), std::invalid_argument);
+  EXPECT_EQ(operation->GetInput("input"), first);
 }
 
 }  // namespace test

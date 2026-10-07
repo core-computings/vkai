@@ -83,10 +83,10 @@ void Engine::CreatePipeline() {
             operation->GetAttribute<int>("batch_size"));
         const int output_size = operation->GetAttribute<int>("output_size");
         std::vector<float> bias(static_cast<size_t>(output_size), 0.0F);
-        if (operation->Inputs().size() > 2) {
-          bias = operation->Inputs()[2]->Data();
+        if (operation->HasInput("bias")) {
+          bias = operation->GetInput("bias")->Data();
         }
-        linear->MapWeights(operation->Inputs()[1]->Data(), bias);
+        linear->MapWeights(operation->GetInput("weights")->Data(), bias);
         layer = std::move(linear);
         break;
       }
@@ -95,9 +95,10 @@ void Engine::CreatePipeline() {
         // Conv2D attribute-to-layer mapping will be added with the first Conv2D model.
         auto conv = std::make_unique<Conv2D>(context_.get(), 1, 1, 28, 28, 3, 3, 1, 1, 0, 0,
                                              PaddingType::Zero);
-        const auto& weights = operation->Inputs().at(1)->Data();
-        const std::vector<float> bias =
-            operation->Inputs().size() > 2 ? operation->Inputs()[2]->Data() : std::vector<float>{};
+        const auto& weights = operation->GetInput("weights")->Data();
+        const std::vector<float> bias = operation->HasInput("bias")
+                                            ? operation->GetInput("bias")->Data()
+                                            : std::vector<float>{};
         conv->MapWeights(weights, bias);
         layer = std::move(conv);
         break;
@@ -127,7 +128,7 @@ void Engine::ExecuteGraph() {
   auto command = core::vulkan::VulkanCommandBuffer::BeginOneTimeCommands(context_.get());
   for (const auto& operation : execution_order_) {
     auto& layer = *layers_.at(operation->Name());
-    layer.Execute(command.buffer(), operation->Inputs().front()->Buffer(),
+    layer.Execute(command.buffer(), operation->GetInput("input")->Buffer(),
                   operation->Outputs().front()->Buffer());
     Synchronization::InsertComputeBarrier(command.buffer());
   }

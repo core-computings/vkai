@@ -56,7 +56,7 @@ std::vector<std::shared_ptr<Operation>> Graph::TopologicalSort() const {
         throw std::logic_error("A tensor has more than one producing operation: " + output->Name());
       }
     }
-    for (const auto& input : operation->Inputs()) {
+    for (const auto& [role, input] : operation->Inputs()) {
       ValidateTensor(input);
     }
   }
@@ -70,7 +70,7 @@ std::vector<std::shared_ptr<Operation>> Graph::TopologicalSort() const {
   std::vector<size_t> indegree(operations_.size(), 0);
   std::vector<std::vector<size_t>> consumers(operations_.size());
   for (size_t index = 0; index < operations_.size(); ++index) {
-    for (const auto& input : operations_[index]->Inputs()) {
+    for (const auto& [role, input] : operations_[index]->Inputs()) {
       const auto producer = producers.find(input.get());
       if (producer != producers.end()) {
         ++indegree[index];

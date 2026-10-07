@@ -76,6 +76,21 @@ std::optional<OpType> GetOpType(const std::string& onnx_type) {
   return it == kTypes.end() ? std::nullopt : std::optional<OpType>(it->second);
 }
 
+// ONNX input positions map to semantic roles, independently of tensor names.
+const std::string& InputRole(OpType type, size_t index) {
+  static const std::unordered_map<OpType, std::vector<std::string>> kRoles = {
+      {OpType::Constant, {}},
+      {OpType::Reshape, {"input", "shape"}},
+      {OpType::Dense, {"input", "weights", "bias"}},
+      {OpType::Conv2D, {"input", "weights", "bias"}},
+      {OpType::Relu, {"input"}},
+      {OpType::MaxPool2D, {"input"}},
+      {OpType::Add, {"input", "addend"}},
+      {OpType::Softmax, {"input"}},
+  };
+  return kRoles.at(type).at(index);
+}
+
 std::shared_ptr<Tensor> AddTensor(Graph& graph, const std::string& name,
                                   std::vector<int64_t> shape = {}) {
   const auto tensor = graph.FindTensor(name);
@@ -110,31 +125,32 @@ void ImportAttribute(const onnx::AttributeProto& attribute, Operation& operation
 
 // Normalize shape-derived parameters once so the engine can directly create layers.
 void ImportLayerParameters(Operation& operation) {
-  const auto& inputs = operation.Inputs();
   switch (operation.Type()) {
     case OpType::Dense: {
-      if (inputs.size() < 2) {
+      if (!operation.HasInput("input") || !operation.HasInput("weights")) {
         throw std::runtime_error("Linear operation requires an activation and weights: " +
                                  operation.Name());
       }
-      const auto& input_shape = inputs[0]->GetShape();
-      const auto& weight_shape = inputs[1]->GetShape();
+      const auto input = operation.GetInput("input");
+      const auto weights = operation.GetInput("weights");
+      const auto& input_shape = input->GetShape();
+      const auto& weight_shape = weights->GetShape();
       if (input_shape.size() != 2 || weight_shape.size() != 2) {
         throw std::runtime_error("Linear operation requires rank-2 input and weights: " +
                                  operation.Name());
       }
-      operation.SetAttribute("input_size", ToLayerDimension(input_shape[1], inputs[0]->Name()));
-      operation.SetAttribute("output_size", ToLayerDimension(weight_shape[0], inputs[1]->Name()));
+      operation.SetAttribute("input_size", ToLayerDimension(input_shape[1], input->Name()));
+      operation.SetAttribute("output_size", ToLayerDimension(weight_shape[0], weights->Name()));
       const int batch_size =
-          input_shape[0] == 0 ? 1 : ToLayerDimension(input_shape[0], inputs[0]->Name());
+          input_shape[0] == 0 ? 1 : ToLayerDimension(input_shape[0], input->Name());
       operation.SetAttribute("batch_size", batch_size);
       break;
     }
     case OpType::Relu:
-      if (inputs.size() != 1) {
+      if (!operation.HasInput("input")) {
         throw std::runtime_error("Relu operation requires one input: " + operation.Name());
       }
-      operation.SetAttribute("element_count", TensorElementCount(*inputs[0]));
+      operation.SetAttribute("element_count", TensorElementCount(*operation.GetInput("input")));
       break;
     default:
       break;
@@ -197,9 +213,11 @@ Graph BuildGraphFromONNX(const std::string& filename) {
     const std::string node_name =
         node.name().empty() ? node.op_type() + "_" + std::to_string(idx) : node.name();
     const auto operation = graph.AddOperation(node_name, *type);
-    for (const std::string& input_name : node.input()) {
+    for (int input_index = 0; input_index < node.input_size(); ++input_index) {
+      const std::string& input_name = node.input(input_index);
       if (!input_name.empty()) {
-        operation->AddInput(AddTensor(graph, input_name));
+        operation->AddInput(InputRole(*type, static_cast<size_t>(input_index)),
+                            AddTensor(graph, input_name));
       }
     }
 

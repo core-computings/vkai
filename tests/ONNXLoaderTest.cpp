@@ -42,6 +42,9 @@ TEST(ONNXLoaderTest, LoadsExportedMnistModel) {
   EXPECT_FLOAT_EQ(fc1->GetAttribute<float>("alpha"), 1.0F);
   EXPECT_FLOAT_EQ(fc1->GetAttribute<float>("beta"), 1.0F);
   EXPECT_EQ(fc1->GetAttribute<int64_t>("transB"), 1);
+  EXPECT_EQ(fc1->GetInput("input"), graph.FindTensor("/Reshape_output_0"));
+  EXPECT_EQ(fc1->GetInput("weights"), fc1_weights);
+  EXPECT_EQ(fc1->GetInput("bias"), graph.FindTensor("fc1.bias"));
 
   const auto fc2 = graph.FindOperation("/fc2/Gemm");
   ASSERT_NE(fc2, nullptr);
@@ -52,6 +55,13 @@ TEST(ONNXLoaderTest, LoadsExportedMnistModel) {
   const auto relu = graph.FindOperation("/relu/Relu");
   ASSERT_NE(relu, nullptr);
   EXPECT_EQ(relu->GetAttribute<int>("element_count"), 128);
+  EXPECT_EQ(relu->GetInput("input"), fc1_output);
+  EXPECT_FALSE(relu->HasInput("weights"));
+
+  const auto reshape = graph.FindOperation("/Reshape");
+  ASSERT_NE(reshape, nullptr);
+  EXPECT_EQ(reshape->GetInput("input"), input);
+  EXPECT_EQ(reshape->GetInput("shape"), graph.FindTensor("/Constant_output_0"));
 
   ASSERT_EQ(graph.Operations().size(), 5U);
   const auto order = graph.TopologicalSort();
