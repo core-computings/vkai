@@ -47,7 +47,7 @@ class Engine {
 
   void UploadInputs();
 
-  void DownloadOutputs();
+  void CopyOutputs();
 
   // Declared before graph_ so tensor buffers are destroyed before their context.
   std::unique_ptr<core::vulkan::VulkanContext> context_;

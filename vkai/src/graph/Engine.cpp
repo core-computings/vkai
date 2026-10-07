@@ -135,10 +135,10 @@ void Engine::ExecuteGraph() {
     Synchronization::InsertHostReadBarrier(command.buffer(), output->Buffer());
   }
   command.EndOneTimeCommands();
-  DownloadOutputs();
+  CopyOutputs();
 }
 
-void Engine::DownloadOutputs() {
+void Engine::CopyOutputs() {
   for (const auto& output : graph_.Outputs()) {
     std::vector<float> data(output->Buffer().Size() / sizeof(float));
     output->Buffer().MapData(
