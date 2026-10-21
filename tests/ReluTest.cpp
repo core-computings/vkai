@@ -1,86 +1,20 @@
-#include <gtest/gtest.h>
+#include <algorithm>
 
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <vector>
-
-#include "VulkanBuffer.h"
-#include "VulkanCommandBuffer.h"
-#include "VulkanContext.h"
+#include "TestUtils.h"
 #include "layers/Relu.h"
-#include "utils/BufferUtils.h"
 
-namespace {
-
-bool ReadFloatBinary(const std::filesystem::path& path, std::vector<float>& values) {
-  std::ifstream file(path, std::ios::binary | std::ios::ate);
-  if (!file.is_open()) {
-    std::cerr << "Failed to open reference data: " << path << '\n';
-    return false;
-  }
-
-  const std::streamsize byte_size = file.tellg();
-  if (byte_size < 0 || byte_size % sizeof(float) != 0) {
-    std::cerr << "Invalid float32 reference data: " << path << '\n';
-    return false;
-  }
-
-  values.resize(static_cast<size_t>(byte_size) / sizeof(float));
-  file.seekg(0, std::ios::beg);
-  if (!file.read(reinterpret_cast<char*>(values.data()), byte_size)) {
-    std::cerr << "Failed to read reference data: " << path << '\n';
-    values.clear();
-    return false;
-  }
-  return true;
+namespace vkai::test {
+using ReluTest = GpuTest;
+TEST_F(ReluTest, HandlesSignsZeroAndPartialWorkgroups) {
+  auto input = TestValues(513);
+  input[0] = 0;
+  input[1] = -0.F;
+  auto expected = input;
+  for (auto& value : expected) value = std::max(value, 0.F);
+  Relu layer(&context, input.size());
+  layer.Init();
+  EXPECT_EQ(RunLayer(context, input, expected.size(),
+                     [&](auto cmd, auto& a, auto& b) { layer.Execute(cmd, a, b); }),
+            expected);
 }
-
-}  // namespace
-
-namespace vkai {
-namespace test {
-
-TEST(ReluTest, MatchesPyTorchReference) {
-  const std::filesystem::path data_dir =
-      std::filesystem::path(VKAI_SOURCE_DIR) / "python/mnist/test_data";
-  std::vector<float> input;
-  std::vector<float> reference;
-  ASSERT_TRUE(ReadFloatBinary(data_dir / "fc1_output.bin", input));
-  ASSERT_TRUE(ReadFloatBinary(data_dir / "relu1_output.bin", reference));
-  ASSERT_EQ(input.size(), reference.size());
-  ASSERT_FALSE(input.empty());
-
-  core::vulkan::VulkanContext context(false, core::vulkan::QueueFamilyType::Compute,
-                                      VK_NULL_HANDLE);
-  context.Init();
-
-  core::vulkan::VulkanBuffer input_buffer(&context, input.size() * sizeof(float),
-                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                          vkai::kHostVisibleMemory);
-  core::vulkan::VulkanBuffer output_buffer(&context, reference.size() * sizeof(float),
-                                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                           vkai::kHostVisibleMemory);
-
-  input_buffer.MapData(
-      [&input](void* data) { std::memcpy(data, input.data(), input.size() * sizeof(float)); });
-
-  Relu relu(&context, static_cast<int>(input.size()));
-  relu.Init();
-
-  auto command_buffer = core::vulkan::VulkanCommandBuffer::BeginOneTimeCommands(&context);
-  relu.Execute(command_buffer.buffer(), input_buffer, output_buffer);
-  command_buffer.EndOneTimeCommands();
-
-  std::vector<float> actual(reference.size());
-  output_buffer.MapData(
-      [&actual](void* data) { std::memcpy(actual.data(), data, actual.size() * sizeof(float)); });
-
-  for (size_t i = 0; i < reference.size(); ++i) {
-    EXPECT_NEAR(actual[i], reference[i], 1e-6F) << "ReLU output mismatch at element " << i;
-  }
-}
-
-}  // namespace test
-}  // namespace vkai
+}  // namespace vkai::test

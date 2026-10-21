@@ -1,0 +1,12 @@
+#version 450
+layout(binding = 0) uniform Parameters { int element_count; } ubo;
+layout(binding = 1, std430) readonly buffer Input { float x[]; };
+layout(binding = 2, std430) writeonly buffer Output { float y[]; };
+layout(local_size_x = 256) in;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(ubo.element_count)) return;
+    // This form avoids overflow for large negative inputs.
+    float z = exp(-abs(x[i]));
+    y[i] = x[i] >= 0.0 ? 1.0 / (1.0 + z) : z / (1.0 + z);
+}

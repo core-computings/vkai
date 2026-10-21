@@ -1,4 +1,7 @@
 build/
+build-*/
+.venv/
+python/models/artifacts/
 cmake-build-*/
 compile_commands.json
 .cache/
@@ -6,16 +9,8 @@ compile_commands.json
 .DS_Store
 
 __pycache__/
-python/mnist/test_data/
-python/mnist12_cnn/model/
-python/mnist12_cnn/test_data/
-python/pspnet/models/
-python/pspnet/output/
-python/pspnet/test_data/
-python/squeezenet/test_data/
 
 *.pth
 *.bin
 python/vkai_py
-python/mnist/data/
 *.onnx

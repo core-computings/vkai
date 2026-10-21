@@ -1,223 +1,113 @@
-#include <gtest/gtest.h>
-
-#include <cmath>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <vector>
-
-#include "VulkanBuffer.h"
-#include "VulkanCommandBuffer.h"
-#include "VulkanContext.h"
+#include "TestUtils.h"
 #include "layers/Conv2D.h"
-#include "utils/BufferUtils.h"
+
+namespace vkai::test {
+using Conv2DTest = GpuTest;
+
+void CheckConvolution(core::vulkan::VulkanContext& context, int batch, int ic, int oc, int h, int w,
+                      int kh, int kw, int pad, int dilation, bool bias) {
+  const int oh = h + 2 * pad - dilation * (kh - 1), ow = w + 2 * pad - dilation * (kw - 1);
+  const auto input = TestValues(batch * ic * h * w);
+  const auto weights = TestValues(oc * ic * kh * kw, .0625F, 4);
+  const auto offsets = bias ? TestValues(oc, .5F, 9) : std::vector<float>{};
+  std::vector<float> expected(batch * oc * oh * ow);
+  for (int n = 0; n < batch; ++n)
+    for (int out = 0; out < oc; ++out)
+      for (int y = 0; y < oh; ++y)
+        for (int x = 0; x < ow; ++x) {
+          double value = bias ? offsets[out] : 0;
+          for (int in = 0; in < ic; ++in)
+            for (int ky = 0; ky < kh; ++ky)
+              for (int kx = 0; kx < kw; ++kx) {
+                const int iy = y - pad + ky * dilation, ix = x - pad + kx * dilation;
+                if (iy >= 0 && iy < h && ix >= 0 && ix < w)
+                  value += double(input[((n * ic + in) * h + iy) * w + ix]) *
+                           weights[((out * ic + in) * kh + ky) * kw + kx];
+              }
+          expected[((n * oc + out) * oh + y) * ow + x] = value;
+        }
+  Conv2D layer(&context, ic, oc, h, w, kh, kw, 1, 1, pad, pad, PaddingType::Zero, batch, dilation,
+               dilation);
+  layer.MapWeights(weights, offsets);
+  EXPECT_EQ(layer.OutputHeight(), oh);
+  EXPECT_EQ(layer.OutputWidth(), ow);
+  layer.Init();
+  ExpectNear(RunLayer(context, input, expected.size(),
+                      [&](auto cmd, auto& a, auto& b) { layer.Execute(cmd, a, b); }),
+             expected);
+}
+
+TEST_F(Conv2DTest, ZeroPaddingWithMultipleChannelsAndBatches) {
+  CheckConvolution(context, 2, 2, 3, 7, 9, 3, 3, 1, 1, false);
+}
+TEST_F(Conv2DTest, SupportsReflectPadding) {
+  const std::vector<float> input{1, 2, 3, 4, 5, 6, 7, 8, 9};
+  Conv2D layer(&context, 1, 1, 3, 3, 3, 3, 1, 1, 1, 1, PaddingType::Reflect);
+  layer.MapWeights(std::vector<float>(9, 1));
+  layer.Init();
+  EXPECT_EQ(
+      RunLayer(context, input, 9, [&](auto cmd, auto& a, auto& b) { layer.Execute(cmd, a, b); }),
+      (std::vector<float>{33, 36, 39, 42, 45, 48, 51, 54, 57}));
+}
+TEST_F(Conv2DTest, MatchesDilatedConvolutionWithCpuReference) {
+  CheckConvolution(context, 2, 3, 4, 7, 9, 3, 3, 2, 2, false);
+}
+TEST_F(Conv2DTest, AppliesBiasInPointwiseConvolution) {
+  CheckConvolution(context, 2, 5, 3, 7, 11, 1, 1, 0, 1, true);
+}
+}  // namespace vkai::test
 
 namespace {
-
-bool ReadFloatBinary(const std::filesystem::path& path, std::vector<float>& values) {
-  std::ifstream file(path, std::ios::binary | std::ios::ate);
-  if (!file.is_open()) {
-    std::cerr << "Failed to open reference data: " << path << '\n';
-    return false;
-  }
-
-  const std::streamsize byte_size = file.tellg();
-  if (byte_size < 0 || byte_size % sizeof(float) != 0) {
-    std::cerr << "Invalid float32 reference data: " << path << '\n';
-    return false;
-  }
-
-  values.resize(static_cast<size_t>(byte_size) / sizeof(float));
-  file.seekg(0, std::ios::beg);
-  if (!file.read(reinterpret_cast<char*>(values.data()), byte_size)) {
-    std::cerr << "Failed to read reference data: " << path << '\n';
-    values.clear();
-    return false;
-  }
-  return true;
-}
-
-void ExpectConvMatchesReference(const std::filesystem::path& input_path,
-                                const std::filesystem::path& weight_path,
-                                const std::filesystem::path& output_path, int input_channels,
-                                int output_channels, int input_height, int input_width,
-                                int kernel_height, int kernel_width, int padding_height,
-                                int padding_width, int dilation_height, int dilation_width,
-                                const std::filesystem::path* bias_path = nullptr) {
-  std::vector<float> input;
-  std::vector<float> weights;
-  std::vector<float> bias;
-  std::vector<float> reference;
-  ASSERT_TRUE(ReadFloatBinary(input_path, input));
-  ASSERT_TRUE(ReadFloatBinary(weight_path, weights));
-  ASSERT_TRUE(ReadFloatBinary(output_path, reference));
-  if (bias_path != nullptr) {
-    ASSERT_TRUE(ReadFloatBinary(*bias_path, bias));
-    ASSERT_EQ(bias.size(), static_cast<size_t>(output_channels));
-  }
-  const int output_height =
-      (input_height + 2 * padding_height - dilation_height * (kernel_height - 1) - 1) + 1;
-  const int output_width =
-      (input_width + 2 * padding_width - dilation_width * (kernel_width - 1) - 1) + 1;
-  ASSERT_EQ(input.size(), static_cast<size_t>(input_channels * input_height * input_width));
-  ASSERT_EQ(weights.size(),
-            static_cast<size_t>(output_channels * input_channels * kernel_height * kernel_width));
-  ASSERT_EQ(reference.size(), static_cast<size_t>(output_channels * output_height * output_width));
-
+void CheckRepeatedReflection(int height, int width) {
+  constexpr int n = 2, ic = 2, oc = 3, kh = 3, kw = 2, ph = 4, pw = 3;
+  constexpr int sh = 2, sw = 1, dh = 2, dw = 1;
+  const int oh = (height + 2 * ph - dh * (kh - 1) - 1) / sh + 1;
+  const int ow = (width + 2 * pw - dw * (kw - 1) - 1) / sw + 1;
+  std::vector<float> x(n * ic * height * width), weights(oc * ic * kh * kw);
+  for (size_t i = 0; i < x.size(); ++i) x[i] = static_cast<int>(i % 13) - 6;
+  for (size_t i = 0; i < weights.size(); ++i) weights[i] = (static_cast<int>(i % 7) - 3) * .25F;
+  auto reflect = [](int index, int size) {
+    if (size == 1) return 0;
+    while (index < 0 || index >= size) index = index < 0 ? -index : 2 * size - index - 2;
+    return index;
+  };
+  std::vector<float> expected(n * oc * oh * ow, .5F);
+  for (int batch = 0; batch < n; ++batch)
+    for (int out = 0; out < oc; ++out)
+      for (int y = 0; y < oh; ++y)
+        for (int z = 0; z < ow; ++z)
+          for (int in = 0; in < ic; ++in)
+            for (int ky = 0; ky < kh; ++ky)
+              for (int kx = 0; kx < kw; ++kx) {
+                const int iy = reflect(y * sh - ph + ky * dh, height);
+                const int ix = reflect(z * sw - pw + kx * dw, width);
+                expected[((batch * oc + out) * oh + y) * ow + z] +=
+                    x[((batch * ic + in) * height + iy) * width + ix] *
+                    weights[((out * ic + in) * kh + ky) * kw + kx];
+              }
   core::vulkan::VulkanContext context(false, core::vulkan::QueueFamilyType::Compute,
                                       VK_NULL_HANDLE);
   context.Init();
-  core::vulkan::VulkanBuffer input_buffer(&context, input.size() * sizeof(float),
-                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                          vkai::kHostVisibleMemory);
-  core::vulkan::VulkanBuffer output_buffer(&context, reference.size() * sizeof(float),
-                                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                           vkai::kHostVisibleMemory);
-  input_buffer.MapData(
-      [&input](void* data) { std::memcpy(data, input.data(), input.size() * sizeof(float)); });
-
-  vkai::Conv2D conv(&context, input_channels, output_channels, input_height, input_width,
-                    kernel_height, kernel_width, 1, 1, padding_height, padding_width,
-                    vkai::PaddingType::Zero, 1, dilation_height, dilation_width);
-  conv.MapWeights(weights, bias);
-  ASSERT_EQ(conv.OutputHeight(), output_height);
-  ASSERT_EQ(conv.OutputWidth(), output_width);
-  conv.Init();
-  auto command_buffer = core::vulkan::VulkanCommandBuffer::BeginOneTimeCommands(&context);
-  conv.Execute(command_buffer.buffer(), input_buffer, output_buffer);
-  command_buffer.EndOneTimeCommands();
-
-  std::vector<float> actual(reference.size());
-  output_buffer.MapData(
-      [&actual](void* data) { std::memcpy(actual.data(), data, actual.size() * sizeof(float)); });
-  for (size_t index = 0; index < reference.size(); ++index) {
-    const float tolerance = 1e-4F + 1e-4F * std::abs(reference[index]);
-    EXPECT_NEAR(actual[index], reference[index], tolerance)
-        << "Conv2D output mismatch at element " << index;
-  }
+  core::vulkan::VulkanBuffer input(&context, x.size() * sizeof(float),
+                                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vkai::kHostVisibleMemory);
+  core::vulkan::VulkanBuffer output(&context, expected.size() * sizeof(float),
+                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vkai::kHostVisibleMemory);
+  input.MapData([&](void* data) { std::memcpy(data, x.data(), x.size() * sizeof(float)); });
+  vkai::Conv2D layer(&context, ic, oc, height, width, kh, kw, sh, sw, ph, pw,
+                     vkai::PaddingType::Reflect, n, dh, dw);
+  layer.MapWeights(weights, std::vector<float>(oc, .5F));
+  layer.Init();
+  auto command = core::vulkan::VulkanCommandBuffer::BeginOneTimeCommands(&context);
+  layer.Execute(command.buffer(), input, output);
+  vkai::Synchronization::InsertHostReadBarrier(command.buffer(), output);
+  command.EndOneTimeCommands();
+  std::vector<float> actual(expected.size());
+  output.MapData(
+      [&](void* data) { std::memcpy(actual.data(), data, actual.size() * sizeof(float)); });
+  for (size_t i = 0; i < actual.size(); ++i) EXPECT_FLOAT_EQ(actual[i], expected[i]) << i;
 }
-
+TEST(Conv2DReflectionTest, ReflectsRepeatedPeriodsWithBatchesStridesAndDilation) {
+  CheckRepeatedReflection(2, 3);
+}
+TEST(Conv2DReflectionTest, ReflectsSingletonDimensions) { CheckRepeatedReflection(1, 2); }
 }  // namespace
-
-namespace vkai {
-namespace test {
-
-TEST(Conv2DTest, MatchesMNIST12FirstConvolution) {
-  constexpr int kInputChannels = 1;
-  constexpr int kOutputChannels = 8;
-  constexpr int kInputHeight = 28;
-  constexpr int kInputWidth = 28;
-  constexpr int kKernelHeight = 5;
-  constexpr int kKernelWidth = 5;
-  constexpr int kStrideHeight = 1;
-  constexpr int kStrideWidth = 1;
-  constexpr int kPaddingHeight = 2;
-  constexpr int kPaddingWidth = 2;
-  constexpr int kBatchSize = 1;
-  const std::filesystem::path data_dir =
-      std::filesystem::path(VKAI_SOURCE_DIR) / "python/mnist12_cnn/test_data";
-  std::vector<float> input;
-  std::vector<float> weights;
-  std::vector<float> reference;
-  ASSERT_TRUE(ReadFloatBinary(data_dir / "000_input.bin", input));
-  ASSERT_TRUE(ReadFloatBinary(data_dir / "001_Convolution28_Conv_input_1.bin", weights));
-  ASSERT_TRUE(ReadFloatBinary(data_dir / "001_Convolution28_Conv_output.bin", reference));
-
-  ASSERT_EQ(input.size(),
-            static_cast<size_t>(kBatchSize * kInputChannels * kInputHeight * kInputWidth));
-  ASSERT_EQ(weights.size(),
-            static_cast<size_t>(kOutputChannels * kInputChannels * kKernelHeight * kKernelWidth));
-  ASSERT_EQ(reference.size(),
-            static_cast<size_t>(kBatchSize * kOutputChannels * kInputHeight * kInputWidth));
-
-  core::vulkan::VulkanContext context(false, core::vulkan::QueueFamilyType::Compute,
-                                      VK_NULL_HANDLE);
-  context.Init();
-
-  core::vulkan::VulkanBuffer input_buffer(&context, input.size() * sizeof(float),
-                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                          vkai::kHostVisibleMemory);
-  core::vulkan::VulkanBuffer output_buffer(&context, reference.size() * sizeof(float),
-                                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                           vkai::kHostVisibleMemory);
-  input_buffer.MapData(
-      [&input](void* data) { std::memcpy(data, input.data(), input.size() * sizeof(float)); });
-
-  Conv2D conv2d(&context, kInputChannels, kOutputChannels, kInputHeight, kInputWidth, kKernelHeight,
-                kKernelWidth, kStrideHeight, kStrideWidth, kPaddingHeight, kPaddingWidth,
-                PaddingType::Zero, kBatchSize);
-  conv2d.MapWeights(weights);
-  ASSERT_EQ(conv2d.OutputHeight(), kInputHeight);
-  ASSERT_EQ(conv2d.OutputWidth(), kInputWidth);
-  conv2d.Init();
-
-  auto command_buffer = core::vulkan::VulkanCommandBuffer::BeginOneTimeCommands(&context);
-  conv2d.Execute(command_buffer.buffer(), input_buffer, output_buffer);
-  command_buffer.EndOneTimeCommands();
-
-  std::vector<float> actual(reference.size());
-  output_buffer.MapData(
-      [&actual](void* data) { std::memcpy(actual.data(), data, actual.size() * sizeof(float)); });
-
-  for (size_t i = 0; i < reference.size(); ++i) {
-    const float tolerance = 1e-5F + 1e-5F * std::abs(reference[i]);
-    EXPECT_NEAR(actual[i], reference[i], tolerance) << "Conv2D output mismatch at element " << i;
-  }
-}
-
-TEST(Conv2DTest, SupportsReflectPadding) {
-  const std::vector<float> input = {
-      1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F, 7.0F, 8.0F, 9.0F,
-  };
-  const std::vector<float> weights(9, 1.0F);
-  const std::vector<float> reference = {
-      33.0F, 36.0F, 39.0F, 42.0F, 45.0F, 48.0F, 51.0F, 54.0F, 57.0F,
-  };
-
-  core::vulkan::VulkanContext context(false, core::vulkan::QueueFamilyType::Compute,
-                                      VK_NULL_HANDLE);
-  context.Init();
-
-  core::vulkan::VulkanBuffer input_buffer(&context, input.size() * sizeof(float),
-                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                          vkai::kHostVisibleMemory);
-  core::vulkan::VulkanBuffer output_buffer(&context, reference.size() * sizeof(float),
-                                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                           vkai::kHostVisibleMemory);
-  input_buffer.MapData(
-      [&input](void* data) { std::memcpy(data, input.data(), input.size() * sizeof(float)); });
-
-  Conv2D conv2d(&context, 1, 1, 3, 3, 3, 3, 1, 1, 1, 1, PaddingType::Reflect);
-  conv2d.MapWeights(weights);
-  conv2d.Init();
-
-  auto command_buffer = core::vulkan::VulkanCommandBuffer::BeginOneTimeCommands(&context);
-  conv2d.Execute(command_buffer.buffer(), input_buffer, output_buffer);
-  command_buffer.EndOneTimeCommands();
-
-  std::vector<float> actual(reference.size());
-  output_buffer.MapData(
-      [&actual](void* data) { std::memcpy(actual.data(), data, actual.size() * sizeof(float)); });
-  EXPECT_EQ(actual, reference);
-}
-
-TEST(Conv2DTest, MatchesDilatedConvolutionReference) {
-  const std::filesystem::path data_dir =
-      std::filesystem::path(VKAI_SOURCE_DIR) / "python/pspnet/test_data";
-  ExpectConvMatchesReference(
-      data_dir / "dilated_conv_input.bin", data_dir / "dilated_conv_weight.bin",
-      data_dir / "dilated_conv_output.bin", 256, 256, 6, 8, 3, 3, 2, 2, 2, 2);
-}
-
-TEST(Conv2DTest, MatchesBiasBearingClassifierConvolution) {
-  const std::filesystem::path data_dir =
-      std::filesystem::path(VKAI_SOURCE_DIR) / "python/pspnet/test_data";
-  const std::filesystem::path bias_path = data_dir / "classifier_conv_bias.bin";
-  ExpectConvMatchesReference(
-      data_dir / "classifier_conv_input.bin", data_dir / "classifier_conv_weight.bin",
-      data_dir / "classifier_conv_output.bin", 512, 150, 6, 8, 1, 1, 0, 0, 1, 1, &bias_path);
-}
-
-}  // namespace test
-}  // namespace vkai

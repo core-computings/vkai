@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -9,6 +10,13 @@
 #include "layers/Layer.h"
 
 namespace vkai {
+
+struct InferenceBenchmark {
+  std::string device_name;
+  uint32_t timestamp_valid_bits;
+  float timestamp_period_ns;
+  std::vector<double> gpu_ms;
+};
 
 class Engine {
  public:
@@ -38,7 +46,15 @@ class Engine {
   // stores results in graph output tensor Data(). Dynamic batch defaults to 1.
   void ExecuteGraph();
 
+  // Uploads inputs once and reuses a recorded command buffer. GPU timestamps
+  // bracket the complete graph, including its internal barriers/copies, while
+  // excluding model setup, host recording/submission and input/output copies.
+  // Runs synchronously and copies the final result to output tensor Data().
+  InferenceBenchmark BenchmarkGraph(int warmup_runs = 5, int measured_runs = 30);
+
  private:
+  void RecordOperations(VkCommandBuffer command);
+
   void AllocateVulkanBuffers();
 
   void UploadWeights();

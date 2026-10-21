@@ -68,16 +68,36 @@ std::vector<int64_t> Int64Data(const onnx::TensorProto& tensor) {
 
 std::optional<OpType> GetOpType(const std::string& onnx_type) {
   static const std::unordered_map<std::string, OpType> kTypes = {
-      {"Constant", OpType::Constant}, {"Reshape", OpType::Reshape}, {"Gemm", OpType::Dense},
-      {"Relu", OpType::Relu},         {"Conv", OpType::Conv2D},     {"MaxPool", OpType::MaxPool2D},
-      {"Add", OpType::Add},           {"Softmax", OpType::Softmax},
+      {"Constant", OpType::Constant},
+      {"Reshape", OpType::Reshape},
+      {"Gemm", OpType::Dense},
+      {"Relu", OpType::Relu},
+      {"Conv", OpType::Conv2D},
+      {"MaxPool", OpType::MaxPool2D},
+      {"Add", OpType::Add},
+      {"Softmax", OpType::Softmax},
+      {"ConvTranspose", OpType::ConvTranspose2D},
+      {"Sigmoid", OpType::Sigmoid},
+      {"Clip", OpType::Clip},
+      {"Mul", OpType::Mul},
+      {"Sub", OpType::Sub},
+      {"Div", OpType::Div},
+      {"Slice", OpType::Slice},
+      {"Transpose", OpType::Transpose},
+      {"Resize", OpType::NearestResize2D},
+      {"ReduceMean", OpType::AdaptiveAvgPool2D},
+      {"BatchNormalization", OpType::BatchNorm2D},
+      {"GlobalAveragePool", OpType::AdaptiveAvgPool2D},
+      {"Concat", OpType::ChannelConcat},
+      {"Flatten", OpType::Reshape},
+      {"Identity", OpType::Reshape},
   };
   const auto it = kTypes.find(onnx_type);
   return it == kTypes.end() ? std::nullopt : std::optional<OpType>(it->second);
 }
 
 // ONNX input positions map to semantic roles, independently of tensor names.
-const std::string& InputRole(OpType type, size_t index) {
+std::string InputRole(OpType type, size_t index) {
   static const std::unordered_map<OpType, std::vector<std::string>> kRoles = {
       {OpType::Constant, {}},
       {OpType::Reshape, {"input", "shape"}},
@@ -87,8 +107,22 @@ const std::string& InputRole(OpType type, size_t index) {
       {OpType::MaxPool2D, {"input"}},
       {OpType::Add, {"input", "addend"}},
       {OpType::Softmax, {"input"}},
+      {OpType::ConvTranspose2D, {"input", "weights", "bias"}},
+      {OpType::Sigmoid, {"input"}},
+      {OpType::Clip, {"input", "min", "max"}},
+      {OpType::Mul, {"input", "rhs"}},
+      {OpType::Sub, {"input", "rhs"}},
+      {OpType::Div, {"input", "rhs"}},
+      {OpType::Slice, {"input", "starts", "ends", "axes", "steps"}},
+      {OpType::Transpose, {"input"}},
+      {OpType::NearestResize2D, {"input", "roi", "scales", "sizes"}},
+      {OpType::BatchNorm2D, {"input", "scale", "bias", "mean", "variance"}},
+      {OpType::AdaptiveAvgPool2D, {"input"}},
   };
-  return kRoles.at(type).at(index);
+  if (type == OpType::ChannelConcat) return index == 0 ? "input" : "input_" + std::to_string(index);
+  const auto& roles = kRoles.at(type);
+  if (index >= roles.size()) throw std::runtime_error("Too many ONNX node inputs");
+  return roles[index];
 }
 
 std::shared_ptr<Tensor> AddTensor(Graph& graph, const std::string& name,
@@ -99,7 +133,10 @@ std::shared_ptr<Tensor> AddTensor(Graph& graph, const std::string& name,
 
 void ImportAttribute(const onnx::AttributeProto& attribute, Operation& operation,
                      const std::vector<std::shared_ptr<Tensor>>& outputs) {
-  if (attribute.has_f()) {
+  if (attribute.type() == onnx::AttributeProto::INTS) {
+    operation.SetAttribute(attribute.name(),
+                           std::vector<int64_t>(attribute.ints().begin(), attribute.ints().end()));
+  } else if (attribute.has_f()) {
     operation.SetAttribute(attribute.name(), attribute.f());
   } else if (attribute.has_i()) {
     operation.SetAttribute(attribute.name(), attribute.i());
@@ -110,12 +147,12 @@ void ImportAttribute(const onnx::AttributeProto& attribute, Operation& operation
     if (tensor.data_type() == onnx::TensorProto::FLOAT) {
       operation.SetAttribute(attribute.name(), FloatData(tensor));
       for (const auto& output : outputs) {
-        output->PopulateTensor({});
+        output->PopulateTensor(FloatData(tensor));
       }
     } else if (tensor.data_type() == onnx::TensorProto::INT64) {
       operation.SetAttribute(attribute.name(), Int64Data(tensor));
       for (const auto& output : outputs) {
-        output->PopulateTensor({});
+        output->PopulateInt64Tensor(Int64Data(tensor));
       }
     } else {
       throw std::runtime_error("Unsupported ONNX constant tensor type");
@@ -182,7 +219,13 @@ Graph BuildGraphFromONNX(const std::string& filename) {
   for (const auto& initializer : model_graph.initializer()) {
     initializer_names.insert(initializer.name());
     const auto tensor = AddTensor(graph, initializer.name(), ShapeFromTensor(initializer));
-    tensor->PopulateTensor(FloatData(initializer));
+    if (initializer.data_type() == onnx::TensorProto::INT64) {
+      // Shape-only initializers were consumed by shape inference above. They
+      // have no float payload to upload to Vulkan.
+      tensor->PopulateInt64Tensor(Int64Data(initializer));
+    } else {
+      tensor->PopulateTensor(FloatData(initializer));
+    }
   }
 
   // input tensors
@@ -205,6 +248,44 @@ Graph BuildGraphFromONNX(const std::string& filename) {
   // operations
   for (int idx = 0; idx < model_graph.node_size(); ++idx) {
     const onnx::NodeProto& node = model_graph.node(idx);
+    if (!node.domain().empty() && node.domain() != "ai.onnx") {
+      throw std::runtime_error("Unsupported ONNX domain: " + node.domain());
+    }
+    // Lower a multi-output Split to independent GPU slices. This preserves
+    // the graph's single-output layer interface and all original tensor names.
+    if (node.op_type() == "Split") {
+      if (node.input_size() < 1 || node.output_size() < 1)
+        throw std::runtime_error("Split requires input and outputs");
+      const auto source = graph.FindTensor(node.input(0));
+      if (!source) throw std::runtime_error("Split input is missing");
+      int64_t axis = 0;
+      for (const auto& attr : node.attribute())
+        if (attr.name() == "axis") axis = attr.i();
+      const auto& shape = source->GetShape();
+      if (axis < 0) axis += shape.size();
+      if (axis < 0 || axis >= static_cast<int64_t>(shape.size()))
+        throw std::runtime_error("Invalid Split axis");
+      int64_t start = 0;
+      for (int i = 0; i < node.output_size(); ++i) {
+        auto output = graph.FindTensor(node.output(i));
+        if (!output || output->GetShape().size() != shape.size())
+          throw std::runtime_error("Split needs inferred output shapes");
+        const auto extent = output->GetShape()[axis];
+        if (extent <= 0) throw std::runtime_error("Split requires positive output extents");
+        auto op = graph.AddOperation(
+            (node.name().empty() ? "Split_" + std::to_string(idx) : node.name()) + "/part_" +
+                std::to_string(i),
+            OpType::Slice);
+        op->AddInput("input", source);
+        op->AddOutput(output);
+        op->SetAttribute("slice_axis", axis);
+        op->SetAttribute("slice_start", start);
+        op->SetAttribute("slice_extent", extent);
+        start += extent;
+      }
+      if (start != shape[axis]) throw std::runtime_error("Split extents do not cover input");
+      continue;
+    }
     const auto type = GetOpType(node.op_type());
     if (!type.has_value()) {
       throw std::runtime_error("Unsupported ONNX operator: " + node.op_type());
@@ -213,6 +294,10 @@ Graph BuildGraphFromONNX(const std::string& filename) {
     const std::string node_name =
         node.name().empty() ? node.op_type() + "_" + std::to_string(idx) : node.name();
     const auto operation = graph.AddOperation(node_name, *type);
+    operation->SetAttribute("onnx_type", node.op_type());
+    if (node.output_size() != 1)
+      throw std::runtime_error("Only single-output inference nodes are supported: " + node_name);
+    if (*type == OpType::ChannelConcat) operation->SetAttribute("input_count", node.input_size());
     for (int input_index = 0; input_index < node.input_size(); ++input_index) {
       const std::string& input_name = node.input(input_index);
       if (!input_name.empty()) {
@@ -230,6 +315,13 @@ Graph BuildGraphFromONNX(const std::string& filename) {
     }
     for (const auto& attribute : node.attribute()) {
       ImportAttribute(attribute, *operation, outputs);
+    }
+    if (node.op_type() == "Identity" && operation->GetInput("input")->HasData()) {
+      const auto source = operation->GetInput("input");
+      if (source->HasInt64Data())
+        operation->Outputs().front()->PopulateInt64Tensor(source->Int64Data());
+      else
+        operation->Outputs().front()->PopulateTensor(source->Data());
     }
     ImportLayerParameters(*operation);
   }
