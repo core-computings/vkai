@@ -51,6 +51,10 @@ Default: `-t macos -r unittests`. `models` validates all four networks and bench
 MobileNetV2 / YOLOv8n. Both platforms have passed 80 unit tests and all four model tests.
 See [model instructions](python/models/README.md) for output files and individual runs.
 
+For compilation only (as in CI), use `./scripts/build.sh -t macos -b` or
+`./scripts/build.sh -t android -b`. This builds all targets without running tests;
+no model data or Android device is required. Add `-r unittests|models` to select a group.
+
 ## GPU inference time
 
 Recorded on 2026-10-21: Release, FP32, batch=1, default clocks; averages of 30 runs

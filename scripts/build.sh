@@ -3,21 +3,26 @@ set -euo pipefail
 
 usage() {
   cat <<EOF
-Usage: $0 [-t {macos|android}] [-r {unittests|models}] [-h]
+Usage: $0 [-t {macos|android}] [-r {unittests|models}] [-b] [-h]
 
 Build and run the selected tests. Defaults: -t macos -r unittests.
   unittests  Run all unit tests.
   models     Run ResNet-18, U-Net, MobileNetV2, YOLOv8n, then GPU benchmarks.
-Android requires ANDROID_NDK_ROOT, adb, and a connected arm64 device.
-Model tests require exported ONNX models, inputs, and reference outputs.
+  -b         Build only; build all targets unless -r selects a group.
+Android builds require ANDROID_NDK_ROOT and host glslc.
+Running Android tests also requires adb and a connected arm64 device.
+Running model tests requires exported ONNX models, inputs, and reference outputs.
 EOF
 }
 platform=macos
 test_mode=unittests
-while getopts ":t:r:h" option; do
+build_only=false
+group_selected=false
+while getopts ":t:r:bh" option; do
   case "$option" in
     t) platform="$OPTARG" ;;
-    r) test_mode="$OPTARG" ;;
+    r) test_mode="$OPTARG"; group_selected=true ;;
+    b) build_only=true ;;
     h) usage; exit 0 ;;
     :) echo "Option -$OPTARG requires a value." >&2; usage >&2; exit 2 ;;
     \?) echo "Unknown option: -$OPTARG" >&2; usage >&2; exit 2 ;;
@@ -37,6 +42,9 @@ case "$test_mode" in
   models) targets=(vkai_infer vkai_detect vkai_benchmark) ;;
   *) echo "Unknown test group: $test_mode" >&2; usage >&2; exit 2 ;;
 esac
+if [[ "$build_only" == true && "$group_selected" == false ]]; then
+  targets=(vkai_unittests vkai_infer vkai_detect vkai_benchmark)
+fi
 
 project_root="$(cd "$(dirname "$0")/.." && pwd)"
 remote=/data/local/tmp/vkai
@@ -54,7 +62,9 @@ run_cpp_tests() {
 
 if [[ "$platform" == android ]]; then
   : "${ANDROID_NDK_ROOT:?Set ANDROID_NDK_ROOT to an installed Android NDK}"
-  adb get-state >/dev/null
+  if [[ "$build_only" == false ]]; then
+    adb get-state >/dev/null
+  fi
   host_build="${VKAI_HOST_BUILD_DIR:-$project_root/build}"
   build_dir="${VKAI_ANDROID_BUILD_DIR:-$project_root/build-android}"
   case "$(uname -s)" in
@@ -85,6 +95,10 @@ else
   cmake -S "$project_root" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release
 fi
 cmake --build "$build_dir" --target "${targets[@]}" -j "${VKAI_JOBS:-10}"
+if [[ "$build_only" == true ]]; then
+  echo "Build complete: $platform ($build_dir)"
+  exit 0
+fi
 echo "Running $test_mode on $platform"
 case "$test_mode" in
   unittests)
