@@ -1,7 +1,6 @@
 """Export the complete pretrained YOLOv8n detection graph at fixed input size."""
 
 import argparse
-import json
 import os
 from pathlib import Path
 
@@ -9,15 +8,17 @@ import cv2
 import numpy as np
 import onnx
 import torch
-from PIL import Image
 from export_common import download, export
+from PIL import Image
+from torchvision.ops import batched_nms
 
 ROOT = Path(__file__).resolve().parent
 os.environ.setdefault("YOLO_CONFIG_DIR", str(ROOT / "artifacts/ultralytics_settings"))
-from ultralytics import YOLO
 
 
 def main():
+    from ultralytics import YOLO
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--size", type=int, default=640)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "artifacts/yolov8n")
@@ -57,7 +58,10 @@ def main():
     head.export = True
     head.format = "onnx"
     head.dynamic = False
-    export(
+    postprocessing = dict(
+        confidence_threshold=0.25, iou_threshold=0.45, max_detections=300
+    )
+    reference = export(
         "yolov8n",
         model,
         x,
@@ -76,13 +80,28 @@ def main():
                 fill=114,
                 normalization="RGB / 255",
             ),
-            postprocessing=dict(
-                confidence_threshold=0.25, iou_threshold=0.45, max_detections=300
-            ),
+            postprocessing=postprocessing,
             output_layout="N x 84 x anchors: center_x, center_y, width, height, 80 class scores",
         ),
         optimize=True,
     )
+    # Save independent PyTorch postprocessing ground truth for the C++ test.
+    output = torch.from_numpy(reference[0].copy())
+    scores, labels = output[4:].max(0)
+    selected = scores >= postprocessing["confidence_threshold"]
+    xywh = output[:4, selected].T
+    boxes = torch.cat((xywh[:, :2] - xywh[:, 2:] / 2, xywh[:, :2] + xywh[:, 2:] / 2), 1)
+    scores, labels = scores[selected], labels[selected]
+    keep = batched_nms(boxes, scores, labels, postprocessing["iou_threshold"])[
+        : postprocessing["max_detections"]
+    ]
+    with (folder / "reference_detections.txt").open("w") as stream:
+        stream.write(f"{len(keep)}\n")
+        for i in keep:
+            values = [float(scores[i]), *boxes[i].tolist()]
+            stream.write(
+                f"{int(labels[i])} " + " ".join(f"{v:.9g}" for v in values) + "\n"
+            )
     m = onnx.load(folder / "model.onnx")
     from collections import Counter
 

@@ -48,7 +48,7 @@ jobs:
           echo "VULKAN_SDK=$RUNNER_TEMP/VulkanSDK/${VULKAN_VERSION}/macOS" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/VulkanSDK/${VULKAN_VERSION}/macOS/bin" >> "$GITHUB_PATH"
 
-      - name: Build VKAI, unit tests, and model tools
+      - name: Build VKAI, unit tests, and per-network model tests
         run: |
           glslc --version
           ./scripts/build.sh -t macos -r 0

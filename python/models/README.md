@@ -1,6 +1,17 @@
 # 四个预训练模型的 macOS / Android 验证
 
-当前模型测试仅保留 ResNet-18、U-Net、MobileNetV2 和 YOLOv8n，均通过 `ONNX → Graph → LayerFactory → Vulkan` 执行。安卓端运行 C++，主机 Python 负责模型导出、参考结果比较和图像绘制。
+当前模型测试仅保留 ResNet-18、U-Net、MobileNetV2 和 YOLOv8n，均通过 `ONNX → Graph → LayerFactory → Vulkan` 执行。Python 提前导出模型和 PyTorch ground truth；推理、结果对比与 GPU 计时均在 C++ 中完成。YOLOv8n 标注图由 C++ 测试直接绘制并保存；Python 绘图脚本可按需单独运行。
+
+每个网络在 `tasks/` 下有独立的 C++ 测试入口，不再使用 `tools/` 子目录或通用推理程序：
+
+| 网络 | C++ 入口 | 可执行文件 |
+| --- | --- | --- |
+| ResNet-18 | `tasks/ResNet18Test.cpp` | `vkai_resnet18_test` |
+| U-Net | `tasks/UNetTest.cpp` | `vkai_unet_test` |
+| MobileNetV2 | `tasks/MobileNetV2Test.cpp` | `vkai_mobilenet_v2_test` |
+| YOLOv8n | `tasks/YOLOv8nTest.cpp` | `vkai_yolov8n_test` |
+
+各入口校验对应网络的输入/输出形状，并逐元素比较推理输出与 `reference.bin`。ResNet-18 / MobileNetV2 进一步比较 top-5 索引及顺序；U-Net 比较阈值 mask 的 Dice；YOLOv8n 比较独立 PyTorch NMS 产生的参考检测框。公共文件读写、数值比较、分类辅助函数和 GPU 计时位于 `tasks/ModelTestUtils.h`；每个可执行文件均支持 `--benchmark`。测试失败直接 `throw`，入口没有 `try/catch`。
 
 | 模型 | 权重与输入 | 输出 |
 | --- | --- | --- |
@@ -32,7 +43,9 @@ uv pip install --python .venv/bin/python -r python/models/requirements-yolo.txt
 
 每个脚本只准备对应的模型，默认输出到 `artifacts/<模型名>/`。可用 `--output-dir /path/to/model-folder` 指定该模型的输出目录。通用下载、ONNX 导出和参考结果校验位于 `export_common.py`。
 
-导出时比较 PyTorch 与 ONNX Runtime；执行时逐元素比较 Vulkan 与 PyTorch，容差为 `atol=rtol=1e-3`。分类要求 top-5 索引一致；U-Net 要求前景/背景均存在且与 PyTorch mask 的 Dice ≥0.999；YOLO 要求类别、框数和参考一致，框 IoU >0.999。失败会返回非零退出码。
+`reference.bin` 是 PyTorch 的原始 float32 输出。YOLO 导出还会用 `torchvision.ops.batched_nms` 生成 `reference_detections.txt`：第一行为框数，之后每行依次为 `class_id confidence x1 y1 x2 y2`，坐标位于 letterbox 后的输入空间。C++ 直接读取这些独立参考框，不用自身的 NMS 生成 ground truth。已有 YOLO 数据需要重新运行 `export_yolov8n.py` 来生成此文件。
+
+导出时比较 PyTorch 与 ONNX Runtime；运行模型测试时，由 C++ 逐元素比较 Vulkan 与 PyTorch，容差为 `atol=rtol=1e-3`。分类要求 top-5 索引及顺序一致；U-Net 要求前景/背景均存在且与 PyTorch mask 的 Dice ≥0.999；YOLO 要求类别、框数及顺序与参考一致，置信度差 <1e-4、框 IoU >0.999，且样例包含人和公交车。失败会返回非零退出码。
 
 ## 统一编译和测试入口
 
@@ -47,7 +60,9 @@ uv pip install --python .venv/bin/python -r python/models/requirements-yolo.txt
 
 全部单元测试均无需 Python 导出数据或下载模型：C++ 生成确定性输入与 CPU 参考结果，小型 ONNX 测试图在临时目录创建并清理，FlatBuffer 加载器的微型权重由 CMake 从 `assets/weights.json` 自动生成。C++ 测试执行不调用 Python；构建 ONNX 第三方依赖时仍需主机 Python 解释器做代码生成。
 
-模型测试仍需主机 Python 做数值校验及图像绘制。结果位于 `artifacts/{macos,android}_validation.json`、`unet/{macos,android}_{mask,overlay}.png` 和 `yolov8n/{macos,android}_{detections.png,validation.json}`。
+`models` 通过 shell 直接运行四个 C++ 测试，不调用 Python。各模型的原始输出和 C++ 校验报告位于 `artifacts/<模型名>/{macos,android}.bin`、`{macos,android}_validation.json`；YOLO 另保存 `{macos,android}_detections.json` 和 `{macos,android}_detections.png`。报告含数值误差及对应的 top-5 / Dice / 检测框 IoU。构建 ONNX 第三方依赖仍需主机 Python 做代码生成。
+
+YOLO C++ 测试在校验通过后读取 `input.jpg`，把 letterbox 坐标还原到原图，绘制检测框、COCO 类别名和置信度，保存原始尺寸的 PNG。JPEG/PNG 读写及内置字体使用已有 stb 头文件，无需系统字体或 Python。绘图不计入网络和 GPU 计时；`--benchmark` 分支只计时及校验数值，不绘图。Android 的输入图随模型上传，在设备端绘图后自动拉回主机。
 
 ## Android arm64 真机
 
@@ -62,34 +77,50 @@ adb devices -l
 
 脚本先构建主机 `flatc` / `protoc`，再交叉编译 arm64；shader 由主机 glslc 生成并嵌入程序，C++ runtime 静态链接。adb 自动上传所选测试组需要的程序和数据到 `/data/local/tmp/vkai` 并执行。多设备时设置标准 `ANDROID_SERIAL` 环境变量。
 
-构建环境变量：`VKAI_JOBS`、`VKAI_BUILD_DIR`（macOS 输出）、`VKAI_HOST_BUILD_DIR`（主机生成器）、`VKAI_ANDROID_BUILD_DIR`（Android 输出）、`VKAI_PYTHON`（模型校验解释器）。`VKAI_TEST_BINARY_DIR` 指定单测在目标平台读取 CMake 生成权重的目录。
+构建环境变量：`VKAI_JOBS`、`VKAI_BUILD_DIR`（macOS 输出）、`VKAI_HOST_BUILD_DIR`（主机生成器）、`VKAI_ANDROID_BUILD_DIR`（Android 输出）。`VKAI_TEST_BINARY_DIR` 指定单测在目标平台读取 CMake 生成权重的目录。
 
 ## 单独复跑
 
-已构建后，可直接调用通用 C++ 入口：
+已构建后，可直接调用对应网络的 C++ 测试入口：
 
 ```bash
-build/tasks/vkai_infer \
+build/tasks/vkai_resnet18_test \
   python/models/artifacts/resnet18/model.onnx \
   python/models/artifacts/resnet18/input.bin \
   build/resnet18_output.bin \
   python/models/artifacts/resnet18/reference.bin
 ```
 
-参考文件参数可省略；张量采用连续、小端 float32。仅复跑部分模型或重新检查已有输出：
+参考文件参数必填；张量采用连续、小端 float32。U-Net / MobileNetV2 使用相同参数顺序；YOLOv8n 需要额外指定检测框 JSON 输出和 PyTorch NMS 参考文件：
 
 ```bash
-.venv/bin/python python/models/validate_models.py --models resnet18 unet mobilenet_v2
-.venv/bin/python python/models/validate_yolov8n.py
-.venv/bin/python python/models/validate_models.py --platform android \
-  --runner build-android/tasks/vkai_infer --models resnet18 unet mobilenet_v2
-.venv/bin/python python/models/validate_models.py --verify-only --models resnet18 unet mobilenet_v2
-ctest --test-dir build --output-on-failure
+build/tasks/vkai_yolov8n_test \
+  python/models/artifacts/yolov8n/model.onnx \
+  python/models/artifacts/yolov8n/input.bin \
+  build/yolov8n_output.bin \
+  build/yolov8n_detections.json \
+  python/models/artifacts/yolov8n/reference.bin \
+  python/models/artifacts/yolov8n/reference_detections.txt \
+  python/models/artifacts/yolov8n/input.jpg \
+  build/yolov8n_detections.png
+```
+
+最后两个图像参数可以一起省略：输入图默认是模型所在目录的 `input.jpg`，PNG 默认与检测框 JSON 同名、扩展名改为 `.png`。输入图读取或 PNG 保存失败会直接 `throw`。
+
+四个测试均直接读取预先导出的 PyTorch 参考结果。`scripts/build.sh` 负责 Android 文件上传、可执行文件调用和结果拉取；设备上不运行 Python。
+
+## 可选图像绘制
+
+YOLO 标注图已经由 C++ 自动生成。测试通过后，也可单独运行 Python 绘图脚本生成 U-Net mask / overlay，或重新绘制 YOLO 标注图。该脚本只读取 C++ 输出及输入图，不读取 ground truth，也不参与校验：
+
+```bash
+.venv/bin/python python/models/visualize_results.py --platform macos
+.venv/bin/python python/models/visualize_results.py --platform android
 ```
 
 ## 纯网络 GPU inference 计时
 
-`BenchmarkGraph()` / `vkai_benchmark` 用首尾两个 GPU timestamp 覆盖整张网络图，包含内部算子、同步和 Reshape / Identity 拷贝，排除模型初始化、CPU 提交、输入上传、输出下载及预后处理。输入上传一次，命令记录一次；batch=1、FP32，预热 5 次后串行测量 30 次，结束后仍核验输出。
+各网络的 C++ 测试入口通过 `--benchmark` 调用 `BenchmarkGraph()`，用首尾两个 GPU timestamp 覆盖整张网络图，包含内部算子、同步和 Reshape / Identity 拷贝，排除模型初始化、CPU 提交、输入上传、输出下载及预后处理。输入上传一次，命令记录一次；batch=1、FP32，预热 5 次后串行测量 30 次，结束后仍核验输出。
 
 2026-10-21 的测量记录：
 
@@ -103,7 +134,13 @@ ctest --test-dir build --output-on-failure
 ```bash
 .venv/bin/python python/models/benchmark_models.py --models resnet18 unet mobilenet_v2 yolov8n
 .venv/bin/python python/models/benchmark_models.py --platform android \
-  --runner build-android/tasks/vkai_benchmark --models resnet18 unet mobilenet_v2 yolov8n
+  --runner-dir build-android/tasks --models resnet18 unet mobilenet_v2 yolov8n
+
+# 直接计时单个网络：
+build/tasks/vkai_resnet18_test --benchmark \
+  python/models/artifacts/resnet18/model.onnx \
+  python/models/artifacts/resnet18/input.bin \
+  python/models/artifacts/resnet18/reference.bin 5 30
 ```
 
 ## 实现范围

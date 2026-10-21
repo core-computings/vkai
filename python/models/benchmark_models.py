@@ -2,18 +2,41 @@
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
-from validate_models import run
 
 ROOT = Path(__file__).resolve().parent
+
+
+def run(command):
+    result = subprocess.run(
+        [str(x) for x in command], check=False, text=True, capture_output=True
+    )
+    if result.returncode:
+        raise RuntimeError(
+            f"Command failed: {command}\n{result.stdout}\n{result.stderr}"
+        )
+    return result.stdout
+
+
+def model_runner(name, platform, runner_dir):
+    if runner_dir is None:
+        build_dir = "build-android" if platform == "android" else "build"
+        runner_dir = ROOT.parents[1] / build_dir / "tasks"
+    return runner_dir / f"vkai_{name}_test"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", choices=["macos", "android"], default="macos")
-    parser.add_argument("--models", nargs="+", default=["mobilenet_v2", "yolov8n"])
     parser.add_argument(
-        "--runner", type=Path, default=ROOT.parents[1] / "build/tasks/vkai_benchmark"
+        "--models",
+        nargs="+",
+        choices=["resnet18", "unet", "mobilenet_v2", "yolov8n"],
+        default=["mobilenet_v2", "yolov8n"],
+    )
+    parser.add_argument(
+        "--runner-dir", type=Path, help="Directory containing the per-network C++ tests"
     )
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--runs", type=int, default=30)
@@ -21,13 +44,15 @@ def main():
     args = parser.parse_args()
     if args.platform == "android":
         run(["adb", "shell", "mkdir -p /data/local/tmp/vkai/models"])
-        run(["adb", "push", args.runner, "/data/local/tmp/vkai/vkai_benchmark"])
-        run(["adb", "shell", "chmod 755 /data/local/tmp/vkai/vkai_benchmark"])
     report = {}
     for name in args.models:
         folder = args.artifacts / name
+        runner = model_runner(name, args.platform, args.runner_dir)
         if args.platform == "android":
             remote = f"/data/local/tmp/vkai/models/{name}"
+            remote_runner = f"/data/local/tmp/vkai/{runner.name}"
+            run(["adb", "push", runner, remote_runner])
+            run(["adb", "shell", f"chmod 755 {remote_runner}"])
             run(["adb", "shell", f"mkdir -p {remote}"])
             for filename in ["model.onnx", "input.bin", "reference.bin"]:
                 run(["adb", "push", folder / filename, remote + "/"])
@@ -35,7 +60,8 @@ def main():
                 [
                     "adb",
                     "shell",
-                    "/data/local/tmp/vkai/vkai_benchmark",
+                    remote_runner,
+                    "--benchmark",
                     remote + "/model.onnx",
                     remote + "/input.bin",
                     remote + "/reference.bin",
@@ -46,7 +72,8 @@ def main():
         else:
             output = run(
                 [
-                    args.runner,
+                    runner,
+                    "--benchmark",
                     folder / "model.onnx",
                     folder / "input.bin",
                     folder / "reference.bin",

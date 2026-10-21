@@ -59,7 +59,7 @@ jobs:
           echo "ANDROID_NDK_ROOT=$RUNNER_TEMP/android-ndk-${NDK_RELEASE}" >> "$GITHUB_ENV"
           test -f "$RUNNER_TEMP/android-ndk-${NDK_RELEASE}/build/cmake/android.toolchain.cmake"
 
-      - name: Build VKAI, unit tests, and model tools for arm64-v8a
+      - name: Build VKAI, unit tests, and per-network model tests for arm64-v8a
         run: |
           glslc --version
           ./scripts/build.sh -t android -r 0

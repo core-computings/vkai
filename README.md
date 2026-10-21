@@ -33,7 +33,18 @@ Files are cached in `python/models/artifacts/` and shared by both platforms.
 ## Build and run tests
 
 `build.sh` configures, compiles, and runs the selected tests. Android deployment
-is automatic. Model tests use host Python for validation and visualization.
+is automatic. Each C++ model test reads the exported PyTorch ground truth and
+validates its own outputs. Python prepares models and optionally renders images;
+model execution and comparison run entirely in C++.
+
+Each network has its own C++ entry point directly in `tasks/`:
+`ResNet18Test.cpp`, `UNetTest.cpp`, `MobileNetV2Test.cpp`, and `YOLOv8nTest.cpp`.
+They build as `vkai_{resnet18,unet,mobilenet_v2,yolov8n}_test`; each executable
+also supports GPU timing with `--benchmark`.
+
+The YOLOv8n C++ test also draws boxes, COCO class names, and confidence scores on
+the original image and saves `python/models/artifacts/yolov8n/<platform>_detections.png`.
+Android generates the PNG on the device and automatically pulls it back to the host.
 
 ```bash
 # macOS
@@ -48,7 +59,7 @@ adb devices
 ```
 
 Default: `-t macos -r unittests`. `models` validates all four networks and benchmarks
-MobileNetV2 / YOLOv8n. Both platforms have passed 80 unit tests and all four model tests.
+MobileNetV2 / YOLOv8n. Both platforms have passed the unit tests and all four model tests.
 See [model instructions](python/models/README.md) for output files and individual runs.
 
 For compilation only (as in CI), use `./scripts/build.sh -t macos -r 0` or
