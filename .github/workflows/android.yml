@@ -1,0 +1,65 @@
+name: Android Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VULKAN_VERSION: "1.4.350.0"
+  NDK_RELEASE: "r28c"
+  VKAI_JOBS: "2"
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install CMake
+        run: python -m pip install cmake==3.31.10
+
+      # Android uses NDK headers/libraries, but needs host glslc and native generators.
+      - name: Install Vulkan SDK
+        run: |
+          curl --fail --location --retry 3 \
+            "https://sdk.lunarg.com/sdk/download/${VULKAN_VERSION}/mac/vulkansdk-macos-${VULKAN_VERSION}.zip" \
+            -o "$RUNNER_TEMP/vulkansdk.zip"
+          unzip -q "$RUNNER_TEMP/vulkansdk.zip" -d "$RUNNER_TEMP/vulkan-installer"
+          sudo "$RUNNER_TEMP/vulkan-installer/vulkansdk-macOS-${VULKAN_VERSION}.app/Contents/MacOS/vulkansdk-macOS-${VULKAN_VERSION}" \
+            --root "$RUNNER_TEMP/VulkanSDK/${VULKAN_VERSION}" \
+            --accept-licenses --default-answer --confirm-command \
+            install com.lunarg.vulkan.core
+          echo "VULKAN_SDK=$RUNNER_TEMP/VulkanSDK/${VULKAN_VERSION}/macOS" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/VulkanSDK/${VULKAN_VERSION}/macOS/bin" >> "$GITHUB_PATH"
+
+      # Download the native toolchain directly; no Java or SDK manager is needed.
+      - name: Install Android NDK
+        run: |
+          curl --fail --location --retry 3 \
+            "https://dl.google.com/android/repository/android-ndk-${NDK_RELEASE}-darwin.zip" \
+            -o "$RUNNER_TEMP/android-ndk.zip"
+          unzip -q "$RUNNER_TEMP/android-ndk.zip" -d "$RUNNER_TEMP"
+          echo "ANDROID_NDK_ROOT=$RUNNER_TEMP/android-ndk-${NDK_RELEASE}" >> "$GITHUB_ENV"
+          test -f "$RUNNER_TEMP/android-ndk-${NDK_RELEASE}/build/cmake/android.toolchain.cmake"
+
+      - name: Build VKAI, unit tests, and model tools for arm64-v8a
+        run: |
+          glslc --version
+          ./scripts/build.sh -t android -r 0

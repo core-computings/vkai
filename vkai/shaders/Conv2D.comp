@@ -20,6 +20,10 @@ layout(binding = 0) uniform UniformBufferObject {
     int padding_height;
     int dilation_width;
     int dilation_height;
+    int groups;
+    int reserved_0;
+    int reserved_1;
+    int reserved_2;
 }
 ubo;
 
@@ -50,14 +54,11 @@ int reflect_index(int index, int size) {
         return 0;
     }
 
-    while (index < 0 || index >= size) {
-        if (index < 0) {
-            index = -index;
-        } else {
-            index = 2 * size - index - 2;
-        }
-    }
-    return index;
+    // A closed-form mirrored period avoids divergent loops, which also
+    // miscompile on some mobile GPU drivers when called inside convolution.
+    int period = 2 * (size - 1);
+    int position = abs(index) % period;
+    return min(position, period - position);
 }
 
 void main() {
@@ -77,7 +78,10 @@ void main() {
     int batch = int(remaining / uint(ubo.output_channels));
 
     float sum = bias_buffer[output_channel];
-    for (int input_channel = 0; input_channel < ubo.input_channels; ++input_channel) {
+    int channels_per_group = ubo.input_channels / ubo.groups;
+    int first_channel = (output_channel / (ubo.output_channels / ubo.groups)) * channels_per_group;
+    for (int local_channel = 0; local_channel < channels_per_group; ++local_channel) {
+        int input_channel = first_channel + local_channel;
         for (int kernel_y = 0; kernel_y < ubo.kernel_height; ++kernel_y) {
             int input_y = output_y * ubo.stride_height + kernel_y * ubo.dilation_height - ubo.padding_height;
 
@@ -101,7 +105,7 @@ void main() {
                         ubo.input_width +
                     sample_x);
                 uint weight_idx = uint(
-                    ((output_channel * ubo.input_channels + input_channel) * ubo.kernel_height +
+                    ((output_channel * channels_per_group + local_channel) * ubo.kernel_height +
                      kernel_y) *
                         ubo.kernel_width +
                     kernel_x);

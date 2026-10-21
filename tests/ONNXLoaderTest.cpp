@@ -1,83 +1,45 @@
-#include <gtest/gtest.h>
-
-#include <filesystem>
-#include <iostream>
-#include <string>
-#include <vector>
-
-#include "graph/Graph.h"
+#include "OnnxTestModel.h"
 #include "utils/ONNXLoader.h"
 
-namespace vkai {
-namespace test {
-
-TEST(ONNXLoaderTest, LoadsExportedMnistModel) {
-  const std::filesystem::path onnx_path =
-      std::filesystem::path(VKAI_SOURCE_DIR) / "python/mnist/mnist_model.onnx";
-  ASSERT_TRUE(std::filesystem::exists(onnx_path))
-      << "Generate the test model with: python python/mnist/train.py --export-onnx";
-
-  Graph graph = BuildGraphFromONNX(onnx_path.string());
-
-  const auto input = graph.FindTensor("input");
+namespace vkai::test {
+TEST(ONNXLoaderTest, LoadsGeneratedGraphAttributesParametersAndConnections) {
+  TestModel model({2, 1, 2, 3}, {2, 3});
+  MakeTestGraph(model);
+  Graph graph = BuildGraphFromONNX(model.Save());
+  auto input = graph.FindTensor("input");
   ASSERT_NE(input, nullptr);
-  EXPECT_EQ(input->GetShape(), (std::vector<int64_t>{0, 1, 28, 28}));
-
-  const auto fc1_weights = graph.FindTensor("fc1.weight");
-  ASSERT_NE(fc1_weights, nullptr);
-  EXPECT_TRUE(fc1_weights->HasData());
-  EXPECT_EQ(fc1_weights->GetShape(), (std::vector<int64_t>{128, 784}));
-  EXPECT_EQ(fc1_weights->Data().size(), 128U * 784U);
-
-  const auto fc1_output = graph.FindTensor("/fc1/Gemm_output_0");
-  ASSERT_NE(fc1_output, nullptr);
-  EXPECT_EQ(fc1_output->GetShape(), (std::vector<int64_t>{0, 128}));
-
-  const auto fc1 = graph.FindOperation("/fc1/Gemm");
-  ASSERT_NE(fc1, nullptr);
-  EXPECT_EQ(fc1->GetAttribute<int>("input_size"), 784);
-  EXPECT_EQ(fc1->GetAttribute<int>("output_size"), 128);
-  EXPECT_EQ(fc1->GetAttribute<int>("batch_size"), 1);
-  // Original ONNX attributes retain their original types and values.
-  EXPECT_FLOAT_EQ(fc1->GetAttribute<float>("alpha"), 1.0F);
-  EXPECT_FLOAT_EQ(fc1->GetAttribute<float>("beta"), 1.0F);
-  EXPECT_EQ(fc1->GetAttribute<int64_t>("transB"), 1);
-  EXPECT_EQ(fc1->GetInput("input"), graph.FindTensor("/Reshape_output_0"));
-  EXPECT_EQ(fc1->GetInput("weights"), fc1_weights);
-  EXPECT_EQ(fc1->GetInput("bias"), graph.FindTensor("fc1.bias"));
-
-  const auto fc2 = graph.FindOperation("/fc2/Gemm");
-  ASSERT_NE(fc2, nullptr);
-  EXPECT_EQ(fc2->GetAttribute<int>("input_size"), 128);
-  EXPECT_EQ(fc2->GetAttribute<int>("output_size"), 10);
-  EXPECT_EQ(fc2->GetAttribute<int>("batch_size"), 1);
-
-  const auto relu = graph.FindOperation("/relu/Relu");
+  EXPECT_EQ(input->GetShape(), (std::vector<int64_t>{2, 1, 2, 3}));
+  auto weights = graph.FindTensor("weights");
+  ASSERT_NE(weights, nullptr);
+  EXPECT_TRUE(weights->HasData());
+  EXPECT_EQ(weights->GetShape(), (std::vector<int64_t>{3, 6}));
+  EXPECT_EQ(weights->Data().size(), 18U);
+  auto dense = graph.FindOperation("Gemm3");
+  ASSERT_NE(dense, nullptr);
+  EXPECT_EQ(dense->GetAttribute<int>("input_size"), 6);
+  EXPECT_EQ(dense->GetAttribute<int>("output_size"), 3);
+  EXPECT_EQ(dense->GetAttribute<int>("batch_size"), 2);
+  EXPECT_FLOAT_EQ(dense->GetAttribute<float>("alpha"), 1.F);
+  EXPECT_FLOAT_EQ(dense->GetAttribute<float>("beta"), 1.F);
+  EXPECT_EQ(dense->GetAttribute<int64_t>("transB"), 1);
+  EXPECT_EQ(dense->GetInput("input"), graph.FindTensor("flat"));
+  EXPECT_EQ(dense->GetInput("weights"), weights);
+  EXPECT_EQ(dense->GetInput("bias"), graph.FindTensor("bias"));
+  auto relu = graph.FindOperation("Relu4");
   ASSERT_NE(relu, nullptr);
-  EXPECT_EQ(relu->GetAttribute<int>("element_count"), 128);
-  EXPECT_EQ(relu->GetInput("input"), fc1_output);
+  EXPECT_EQ(relu->GetAttribute<int>("element_count"), 6);
+  EXPECT_EQ(relu->GetInput("input"), graph.FindTensor("dense"));
   EXPECT_FALSE(relu->HasInput("weights"));
-
-  const auto reshape = graph.FindOperation("/Reshape");
+  auto reshape = graph.FindOperation("Reshape2");
   ASSERT_NE(reshape, nullptr);
   EXPECT_EQ(reshape->GetInput("input"), input);
-  EXPECT_EQ(reshape->GetInput("shape"), graph.FindTensor("/Constant_output_0"));
-
-  ASSERT_EQ(graph.Operations().size(), 5U);
+  EXPECT_EQ(reshape->GetInput("shape"), graph.FindTensor("shape"));
+  ASSERT_EQ(graph.Operations().size(), 4U);
   const auto order = graph.TopologicalSort();
-  ASSERT_EQ(order.size(), 5U);
-  EXPECT_EQ(order[0]->Name(), "/Constant");
-  EXPECT_EQ(order[1]->Name(), "/Reshape");
-  EXPECT_EQ(order[2]->Name(), "/fc1/Gemm");
-  EXPECT_EQ(order[3]->Name(), "/relu/Relu");
-  EXPECT_EQ(order[4]->Name(), "/fc2/Gemm");
-
-  std::cout << "Loaded ONNX topological order: ";
-  for (size_t index = 0; index < order.size(); ++index) {
-    std::cout << (index == 0 ? "" : " -> ") << order[index]->Name();
-  }
-  std::cout << '\n';
+  ASSERT_EQ(order.size(), 4U);
+  EXPECT_EQ(order[0]->Name(), "Constant1");
+  EXPECT_EQ(order[1]->Name(), "Reshape2");
+  EXPECT_EQ(order[2]->Name(), "Gemm3");
+  EXPECT_EQ(order[3]->Name(), "Relu4");
 }
-
-}  // namespace test
-}  // namespace vkai
+}  // namespace vkai::test

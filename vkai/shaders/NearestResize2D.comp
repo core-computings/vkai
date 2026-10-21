@@ -1,0 +1,41 @@
+#version 450
+
+layout(binding = 0) uniform UniformBufferObject {
+    int input_width;
+    int input_height;
+    int input_channels;
+    int batch_size;
+    int output_width;
+    int output_height;
+    int reserved_0;
+    int reserved_1;
+} ubo;
+
+layout(binding = 1, std430) readonly buffer InputBuffer { float input_buffer[]; };
+layout(binding = 2, std430) writeonly buffer OutputBuffer { float output_buffer[]; };
+layout(local_size_x = 256) in;
+
+float ReadInput(int batch, int channel, int y, int x) {
+    int index = ((batch * ubo.input_channels + channel) * ubo.input_height + y) *
+                ubo.input_width + x;
+    return input_buffer[index];
+}
+
+void main() {
+    uint output_index = gl_GlobalInvocationID.x;
+    uint output_count = uint(ubo.batch_size * ubo.input_channels *
+                             ubo.output_height * ubo.output_width);
+    if (output_index >= output_count) return;
+
+    uint remaining = output_index;
+    int output_x = int(remaining % uint(ubo.output_width));
+    remaining /= uint(ubo.output_width);
+    int output_y = int(remaining % uint(ubo.output_height));
+    remaining /= uint(ubo.output_height);
+    int channel = int(remaining % uint(ubo.input_channels));
+    int batch = int(remaining / uint(ubo.input_channels));
+
+    int sy = min(output_y * ubo.input_height / ubo.output_height, ubo.input_height - 1);
+    int sx = min(output_x * ubo.input_width / ubo.output_width, ubo.input_width - 1);
+    output_buffer[output_index] = ReadInput(batch, channel, sy, sx);
+}

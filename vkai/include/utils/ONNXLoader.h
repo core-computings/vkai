@@ -6,8 +6,9 @@
 
 namespace vkai {
 
-// Builds an engine graph from the float32 ONNX subset used by the exported
-// MNIST model. Unsupported ONNX operators or tensor types throw
+// Builds a statically shaped float32 graph for the supported ONNX inference
+// subset (including ResNet and U-Net). A symbolic leading batch defaults to 1.
+// Unsupported ONNX operators or tensor types throw
 // std::runtime_error.
 Graph BuildGraphFromONNX(const std::string& filename);
 

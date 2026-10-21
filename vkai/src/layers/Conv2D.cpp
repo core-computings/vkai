@@ -3,22 +3,38 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <limits>
+#include <stdexcept>
 
 #include "utils/BufferUtils.h"
 
 namespace vkai {
+namespace {
+VkDeviceSize GroupedWeightBytes(int ic, int oc, int kh, int kw, int groups) {
+  if (groups <= 0 || ic <= 0 || oc <= 0 || kh <= 0 || kw <= 0 || ic % groups || oc % groups)
+    throw std::invalid_argument("Conv2D channels must be divisible by positive groups");
+  int64_t count = 1;
+  for (int d : {oc, ic / groups, kh, kw}) {
+    if (count > std::numeric_limits<int>::max() / d)
+      throw std::invalid_argument("Conv2D weights are too large");
+    count *= d;
+  }
+  return static_cast<VkDeviceSize>(count) * sizeof(float);
+}
+}  // namespace
 
 Conv2D::Conv2D(core::vulkan::VulkanContext* context, int input_channels, int output_channels,
                int input_height, int input_width, int kernel_height, int kernel_width,
                int stride_height, int stride_width, int padding_height, int padding_width,
-               PaddingType padding_type, int batch_size, int dilation_height, int dilation_width)
+               PaddingType padding_type, int batch_size, int dilation_height, int dilation_width,
+               int groups)
     : Layer(context),
       uniform_buffer_(context, sizeof(UniformData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                       kHostVisibleMemory),
-      weights_buffer_(context,
-                      static_cast<VkDeviceSize>(input_channels) * output_channels * kernel_height *
-                          kernel_width * sizeof(float),
-                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, kHostVisibleMemory),
+      weights_buffer_(
+          context,
+          GroupedWeightBytes(input_channels, output_channels, kernel_height, kernel_width, groups),
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, kHostVisibleMemory),
       bias_buffer_(context, static_cast<VkDeviceSize>(output_channels) * sizeof(float),
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, kHostVisibleMemory),
       uniform_data_{
@@ -38,6 +54,10 @@ Conv2D::Conv2D(core::vulkan::VulkanContext* context, int input_channels, int out
           .padding_height = padding_height,
           .dilation_width = dilation_width,
           .dilation_height = dilation_height,
+          .groups = groups,
+          .reserved_0 = 0,
+          .reserved_1 = 0,
+          .reserved_2 = 0,
       } {
   if (input_channels <= 0 || output_channels <= 0 || input_height <= 0 || input_width <= 0 ||
       kernel_height <= 0 || kernel_width <= 0 || stride_height <= 0 || stride_width <= 0 ||
@@ -72,8 +92,8 @@ void Conv2D::MapWeights(const std::vector<float>& weights, const std::vector<flo
     throw std::logic_error("Cannot map weights for an invalid Conv2D");
   }
   const size_t expected_weight_count = static_cast<size_t>(uniform_data_.output_channels) *
-                                       uniform_data_.input_channels * uniform_data_.kernel_height *
-                                       uniform_data_.kernel_width;
+                                       (uniform_data_.input_channels / uniform_data_.groups) *
+                                       uniform_data_.kernel_height * uniform_data_.kernel_width;
   if (weights.size() != expected_weight_count ||
       (!bias.empty() && bias.size() != static_cast<size_t>(uniform_data_.output_channels))) {
     throw std::invalid_argument("Conv2D weights or bias size does not match its dimensions");

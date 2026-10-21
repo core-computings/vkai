@@ -1,0 +1,92 @@
+#version 450
+
+layout(binding = 0) uniform UniformBufferObject {
+    int input_width;
+    int input_height;
+    int input_channels;
+    int batch_size;
+
+    int output_width;
+    int output_height;
+    int output_channels;
+    int reserved;
+
+    int kernel_width;
+    int kernel_height;
+    int stride_width;
+    int stride_height;
+
+    int padding_width;
+    int padding_height;
+    int dilation_width;
+    int dilation_height;
+}
+ubo;
+
+layout(set = 0, binding = 1, std430) readonly buffer InputBuffer {
+    float input_buffer[];
+};
+
+layout(set = 0, binding = 2, std430) readonly buffer WeightBuffer {
+    float weight_buffer[];
+};
+
+layout(set = 0, binding = 3, std430) writeonly buffer OutputBuffer {
+    float output_buffer[];
+};
+
+layout(set = 0, binding = 4, std430) readonly buffer BiasBuffer {
+    float bias_buffer[];
+};
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+// input:   [batch_size, input_channels, input_height, input_width] (NCHW)
+// weights: [input_channels, output_channels, kernel_height, kernel_width] (OIHW)
+// output:  [batch_size, output_channels, output_height, output_width] (NCHW)
+
+void main() {
+    uint global_idx = gl_GlobalInvocationID.x;
+    uint output_element_count = uint(
+        ubo.batch_size * ubo.output_channels * ubo.output_height * ubo.output_width);
+    if (global_idx >= output_element_count) {
+        return;
+    }
+
+    uint remaining = global_idx;
+    int output_x = int(remaining % uint(ubo.output_width));
+    remaining /= uint(ubo.output_width);
+    int output_y = int(remaining % uint(ubo.output_height));
+    remaining /= uint(ubo.output_height);
+    int output_channel = int(remaining % uint(ubo.output_channels));
+    int batch = int(remaining / uint(ubo.output_channels));
+
+    float sum = bias_buffer[output_channel];
+    for (int input_channel = 0; input_channel < ubo.input_channels; ++input_channel) {
+        for (int kernel_y = 0; kernel_y < ubo.kernel_height; ++kernel_y) {
+            int numerator_y = output_y + ubo.padding_height - kernel_y * ubo.dilation_height;
+            if (numerator_y < 0 || numerator_y % ubo.stride_height != 0) continue;
+            int sample_y = numerator_y / ubo.stride_height;
+            if (sample_y >= ubo.input_height) continue;
+            for (int kernel_x = 0; kernel_x < ubo.kernel_width; ++kernel_x) {
+                int numerator_x = output_x + ubo.padding_width - kernel_x * ubo.dilation_width;
+                if (numerator_x < 0 || numerator_x % ubo.stride_width != 0) continue;
+                int sample_x = numerator_x / ubo.stride_width;
+                if (sample_x >= ubo.input_width) continue;
+
+                uint input_idx = uint(
+                    ((batch * ubo.input_channels + input_channel) * ubo.input_height + sample_y) *
+                        ubo.input_width +
+                    sample_x);
+                uint weight_idx = uint(
+                    ((input_channel * ubo.output_channels + output_channel) * ubo.kernel_height +
+                     kernel_y) *
+                        ubo.kernel_width +
+                    kernel_x);
+                sum += input_buffer[input_idx] * weight_buffer[weight_idx];
+            }
+        }
+    }
+
+    output_buffer[global_idx] = sum;
+}

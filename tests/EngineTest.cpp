@@ -1,92 +1,47 @@
-#include <gtest/gtest.h>
+#include "OnnxTestModel.h"
 
-#include <cmath>
-#include <filesystem>
-#include <fstream>
-#include <unordered_map>
-#include <vector>
-
-#include "graph/Engine.h"
-
-namespace vkai {
-namespace test {
-
-TEST(EngineTest, BuildsGraphFromExportedMnistModel) {
-  const std::filesystem::path onnx_path =
-      std::filesystem::path(VKAI_SOURCE_DIR) / "python/mnist/mnist_model.onnx";
-  ASSERT_TRUE(std::filesystem::exists(onnx_path))
-      << "Generate the test model with: python python/mnist/train.py --export-onnx";
-
-  const Engine engine(onnx_path.string());
-  const Graph& graph = engine.GetGraph();
-
+namespace vkai::test {
+TEST(EngineTest, AllocatesBuffersAndBuildsTopologicalLayers) {
+  TestModel model({2, 1, 2, 3}, {2, 3});
+  MakeTestGraph(model);
+  Engine engine(model.Save());
+  const auto& graph = engine.GetGraph();
   ASSERT_EQ(graph.Inputs().size(), 1U);
   ASSERT_TRUE(graph.Inputs().front()->HasBuffer());
-  EXPECT_EQ(graph.Inputs().front()->Buffer().Size(), 784U * sizeof(float));
-
-  for (const auto& operation : graph.Operations()) {
-    for (const auto& output : operation->Outputs()) {
-      EXPECT_TRUE(output->HasBuffer()) << output->Name();
-    }
-  }
+  EXPECT_EQ(graph.Inputs().front()->Buffer().Size(), 12U * sizeof(float));
+  for (const auto& operation : graph.Operations())
+    for (const auto& output : operation->Outputs()) EXPECT_TRUE(output->HasBuffer());
   const auto& layers = engine.GetLayers();
-  ASSERT_EQ(layers.size(), 4U);
-  EXPECT_FALSE(layers.contains("/Constant"));
-  EXPECT_TRUE(layers.contains("/Reshape"));
-  EXPECT_NE(layers.at("/fc1/Gemm")->pipeline, VK_NULL_HANDLE);
-  EXPECT_NE(layers.at("/relu/Relu")->pipeline, VK_NULL_HANDLE);
-  EXPECT_NE(layers.at("/fc2/Gemm")->pipeline, VK_NULL_HANDLE);
-
-  const auto weights = graph.FindTensor("fc1.weight");
-  ASSERT_NE(weights, nullptr);
-  ASSERT_TRUE(weights->HasBuffer());
-  EXPECT_NE(weights->Buffer().buffer, VK_NULL_HANDLE);
-  EXPECT_EQ(weights->Buffer().Size(), 128U * 784U * sizeof(float));
-
-  const auto bias = graph.FindTensor("fc1.bias");
-  ASSERT_NE(bias, nullptr);
-  ASSERT_TRUE(bias->HasBuffer());
-  EXPECT_EQ(bias->Buffer().Size(), 128U * sizeof(float));
-
+  ASSERT_EQ(layers.size(), 3U);
+  EXPECT_FALSE(layers.contains("Constant1"));
+  for (const auto* name : {"Reshape2", "Gemm3", "Relu4"}) {
+    ASSERT_TRUE(layers.contains(name));
+  }
+  // Reshape records a buffer copy; only compute layers have a pipeline.
+  for (const auto* name : {"Gemm3", "Relu4"}) {
+    EXPECT_NE(layers.at(name)->pipeline, VK_NULL_HANDLE);
+  }
+  for (const auto* name : {"weights", "bias"}) {
+    auto tensor = graph.FindTensor(name);
+    ASSERT_NE(tensor, nullptr);
+    ASSERT_TRUE(tensor->HasBuffer());
+    EXPECT_NE(tensor->Buffer().buffer, VK_NULL_HANDLE);
+  }
+  EXPECT_EQ(graph.FindTensor("weights")->Buffer().Size(), 18U * sizeof(float));
+  EXPECT_EQ(graph.FindTensor("bias")->Buffer().Size(), 3U * sizeof(float));
   const auto& order = engine.GetTopoOrder();
-  ASSERT_EQ(order.size(), 5U);
-  EXPECT_EQ(order[0]->Name(), "/Constant");
-  EXPECT_EQ(order[1]->Name(), "/Reshape");
-  EXPECT_EQ(order[2]->Name(), "/fc1/Gemm");
-  EXPECT_EQ(order[3]->Name(), "/relu/Relu");
-  EXPECT_EQ(order[4]->Name(), "/fc2/Gemm");
+  ASSERT_EQ(order.size(), 4U);
+  EXPECT_EQ(order[0]->Name(), "Constant1");
+  EXPECT_EQ(order[1]->Name(), "Reshape2");
+  EXPECT_EQ(order[2]->Name(), "Gemm3");
+  EXPECT_EQ(order[3]->Name(), "Relu4");
   EXPECT_EQ(order, graph.TopologicalSort());
   EXPECT_EQ(&order, &engine.GetTopoOrder());
 }
 
-TEST(EngineTest, ExecutesMnistGraph) {
-  const auto model_dir = std::filesystem::path(VKAI_SOURCE_DIR) / "python/mnist";
-  Engine engine((model_dir / "mnist_model.onnx").string());
-  const auto input = engine.GetInputTensor();
-
-  // read input from file
-  std::vector<float> input_data(784);
-  std::ifstream input_file(model_dir / "test_data/input.bin", std::ios::binary);
-  ASSERT_TRUE(input_file.read(reinterpret_cast<char*>(input_data.data()),
-                              static_cast<std::streamsize>(input_data.size() * sizeof(float))));
-
-  // read reference output from file
-  std::vector<float> reference(10);
-  std::ifstream reference_file(model_dir / "test_data/fc2_output.bin", std::ios::binary);
-  ASSERT_TRUE(reference_file.read(reinterpret_cast<char*>(reference.data()),
-                                  static_cast<std::streamsize>(reference.size() * sizeof(float))));
-
-  // inference
-  input->PopulateTensor(input_data);
-  engine.ExecuteGraph();
-  const auto output = engine.GetOutputTensor();
-
-  // validate output
-  for (size_t index = 0; index < reference.size(); ++index) {
-    EXPECT_NEAR(output->Data()[index], reference[index],
-                1e-4F + 1e-4F * std::abs(reference[index]));
-  }
+TEST(EngineTest, ExecutesGeneratedGraphAcrossBatches) {
+  TestModel model({2, 1, 2, 3}, {2, 3});
+  MakeTestGraph(model);
+  model.Check({1, 2, 3, 4, 5, 6, -1, -2, -3, -4, -5, -6}, {3.5F, 3.5F, 0, 0, 0, 4});
 }
-
-}  // namespace test
-}  // namespace vkai
+}  // namespace vkai::test

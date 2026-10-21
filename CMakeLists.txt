@@ -1,7 +1,13 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.26)
 project(VKAI CXX)
 
+if(ANDROID AND ANDROID_NATIVE_API_LEVEL LESS 28)
+  message(FATAL_ERROR "VKAI requires Android API 28 or newer for Vulkan 1.1 entry points")
+endif()
+
 enable_testing()
+
+set(VKAI_TEST_BINARY_DIR "${CMAKE_BINARY_DIR}" CACHE STRING "Runtime generated-data root for tests")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,6 +27,14 @@ add_compile_options(
   -Werror
   -O3
 )
+
+# Vulkan's designated struct initializers intentionally zero omitted fields.
+# Recent NDK Clang versions diagnose these separately from ordinary aggregates.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-Wno-missing-designated-field-initializers" VKAI_HAS_DESIGNATED_WARNING)
+if(VKAI_HAS_DESIGNATED_WARNING)
+  add_compile_options(-Wno-missing-designated-field-initializers)
+endif()
 
 flatbuffers_generate_headers(
   TARGET vkai_flatbuffers

@@ -1,0 +1,7 @@
+#version 450
+layout(binding=0) uniform Parameters {int count;int rank;int offset;int reserved;ivec4 dims[2];ivec4 strides[2];} ubo;
+layout(binding=1,std430) readonly buffer Input {float x[];};
+layout(binding=2,std430) writeonly buffer Output {float y[];};
+layout(local_size_x=256) in;
+void main(){uint i=gl_GlobalInvocationID.x;if(i>=uint(ubo.count))return;int rem=int(i),source=ubo.offset;
+for(int axis=ubo.rank-1;axis>=0;--axis){int extent=ubo.dims[axis/4][axis%4];source+=(rem%extent)*ubo.strides[axis/4][axis%4];rem/=extent;}y[i]=x[source];}

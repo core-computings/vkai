@@ -1,6 +1,0 @@
-numpy
-pillow
-torch
-torchvision
-flatbuffers==25.12.19
-onnx

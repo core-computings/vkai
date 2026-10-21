@@ -1,88 +1,37 @@
-#include <gtest/gtest.h>
-
-#include <cmath>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <string>
-#include <vector>
-
-#include "VulkanBuffer.h"
-#include "VulkanCommandBuffer.h"
-#include "VulkanContext.h"
+#include "TestUtils.h"
 #include "layers/AdaptiveAvgPool2D.h"
-#include "utils/BufferUtils.h"
 
-namespace {
+namespace vkai::test {
+using AdaptiveAvgPool2DTest = GpuTest;
 
-bool ReadFloats(const std::filesystem::path& path, std::vector<float>* values) {
-  std::ifstream stream(path, std::ios::binary | std::ios::ate);
-  if (!stream) return false;
-  const auto bytes = stream.tellg();
-  if (bytes < 0 || bytes % sizeof(float) != 0) return false;
-  values->resize(static_cast<size_t>(bytes) / sizeof(float));
-  stream.seekg(0);
-  return bytes == 0 ||
-         static_cast<bool>(stream.read(reinterpret_cast<char*>(values->data()), bytes));
+void CheckAverage(core::vulkan::VulkanContext& context, int n, int c, int h, int w, int oh,
+                  int ow) {
+  const auto input = TestValues(n * c * h * w);
+  std::vector<float> expected(n * c * oh * ow);
+  // Independently average the continuous grid cells covered by each output bin.
+  for (int plane = 0; plane < n * c; ++plane)
+    for (int y = 0; y < oh; ++y)
+      for (int x = 0; x < ow; ++x) {
+        const int top = y * h / oh, bottom = ((y + 1) * h + oh - 1) / oh;
+        const int left = x * w / ow, right = ((x + 1) * w + ow - 1) / ow;
+        double total = 0;
+        for (int iy = top; iy < bottom; ++iy)
+          for (int ix = left; ix < right; ++ix) total += input[(plane * h + iy) * w + ix];
+        expected[(plane * oh + y) * ow + x] = total / ((bottom - top) * (right - left));
+      }
+  AdaptiveAvgPool2D layer(&context, c, h, w, oh, ow, n);
+  EXPECT_EQ(layer.OutputHeight(), oh);
+  EXPECT_EQ(layer.OutputWidth(), ow);
+  layer.Init();
+  ExpectNear(RunLayer(context, input, expected.size(),
+                      [&](auto cmd, auto& a, auto& b) { layer.Execute(cmd, a, b); }),
+             expected);
 }
 
-void ExpectAdaptiveAverageMatchesPyTorch(const std::string& name) {
-  const auto directory =
-      std::filesystem::path(VKAI_SOURCE_DIR) / "python/pspnet/test_data/adaptive_avg_pool";
-  std::ifstream shape_stream(directory / (name + ".txt"));
-  int batch, channels, input_height, input_width, output_height, output_width;
-  ASSERT_TRUE(shape_stream >> batch >> channels >> input_height >> input_width >> output_height >>
-              output_width);
-  std::vector<float> input;
-  std::vector<float> expected;
-  ASSERT_TRUE(ReadFloats(directory / (name + "_input.bin"), &input));
-  ASSERT_TRUE(ReadFloats(directory / (name + "_output.bin"), &expected));
-  ASSERT_EQ(input.size(), static_cast<size_t>(batch * channels * input_height * input_width));
-  ASSERT_EQ(expected.size(), static_cast<size_t>(batch * channels * output_height * output_width));
-
-  core::vulkan::VulkanContext context(false, core::vulkan::QueueFamilyType::Compute,
-                                      VK_NULL_HANDLE);
-  context.Init();
-  core::vulkan::VulkanBuffer input_buffer(&context, input.size() * sizeof(float),
-                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                          vkai::kHostVisibleMemory);
-  core::vulkan::VulkanBuffer output_buffer(&context, expected.size() * sizeof(float),
-                                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                           vkai::kHostVisibleMemory);
-  input_buffer.MapData(
-      [&input](void* data) { std::memcpy(data, input.data(), input.size() * sizeof(float)); });
-  vkai::AdaptiveAvgPool2D pool(&context, channels, input_height, input_width, output_height,
-                               output_width, batch);
-  ASSERT_EQ(pool.OutputHeight(), output_height);
-  ASSERT_EQ(pool.OutputWidth(), output_width);
-  pool.Init();
-  auto command_buffer = core::vulkan::VulkanCommandBuffer::BeginOneTimeCommands(&context);
-  pool.Execute(command_buffer.buffer(), input_buffer, output_buffer);
-  command_buffer.EndOneTimeCommands();
-
-  std::vector<float> actual(expected.size());
-  output_buffer.MapData(
-      [&actual](void* data) { std::memcpy(actual.data(), data, actual.size() * sizeof(float)); });
-  for (size_t i = 0; i < expected.size(); ++i) {
-    EXPECT_NEAR(actual[i], expected[i], 1e-6F + 1e-6F * std::abs(expected[i])) << "index " << i;
-  }
+TEST_F(AdaptiveAvgPool2DTest, SupportsGlobalAndMultipleOutputSizes) {
+  for (int size : {1, 2, 3, 6}) CheckAverage(context, 1, 3, 6, 8, size, size);
 }
-
-}  // namespace
-
-namespace vkai {
-namespace test {
-
-TEST(AdaptiveAvgPool2DTest, MatchesAllPyramidPoolingScales) {
-  ExpectAdaptiveAverageMatchesPyTorch("pspnet_scale_1");
-  ExpectAdaptiveAverageMatchesPyTorch("pspnet_scale_2");
-  ExpectAdaptiveAverageMatchesPyTorch("pspnet_scale_3");
-  ExpectAdaptiveAverageMatchesPyTorch("pspnet_scale_6");
+TEST_F(AdaptiveAvgPool2DTest, HandlesBatchedNonDivisibleRegions) {
+  CheckAverage(context, 2, 3, 7, 11, 3, 4);
 }
-
-TEST(AdaptiveAvgPool2DTest, MatchesBatchedNonDivisibleRegions) {
-  ExpectAdaptiveAverageMatchesPyTorch("batched");
-}
-
-}  // namespace test
-}  // namespace vkai
+}  // namespace vkai::test

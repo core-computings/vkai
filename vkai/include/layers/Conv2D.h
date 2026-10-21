@@ -14,7 +14,7 @@ class Conv2D : public Layer {
   Conv2D(core::vulkan::VulkanContext* context, int input_channels, int output_channels,
          int input_height, int input_width, int kernel_height, int kernel_width, int stride_height,
          int stride_width, int padding_height, int padding_width, PaddingType padding_type,
-         int batch_size = 1, int dilation_height = 1, int dilation_width = 1);
+         int batch_size = 1, int dilation_height = 1, int dilation_width = 1, int groups = 1);
 
   void MapWeights(const std::vector<float>& weights, const std::vector<float>& bias = {});
 
@@ -55,9 +55,13 @@ class Conv2D : public Layer {
     int padding_height;
     int dilation_width;
     int dilation_height;
+    int groups;
+    int reserved_0;
+    int reserved_1;
+    int reserved_2;
   };
 
-  static_assert(sizeof(UniformData) == 64);
+  static_assert(sizeof(UniformData) == 80);
 
   core::vulkan::VulkanBuffer uniform_buffer_;
   core::vulkan::VulkanBuffer weights_buffer_;
