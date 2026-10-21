@@ -3,12 +3,12 @@ set -euo pipefail
 
 usage() {
   cat <<EOF
-Usage: $0 [-t {macos|android}] [-r {unittests|models}] [-b] [-h]
+Usage: $0 [-t {macos|android}] [-r {0|unittests|models}] [-h]
 
 Build and run the selected tests. Defaults: -t macos -r unittests.
+  0          Build all targets without running tests or models.
   unittests  Run all unit tests.
   models     Run ResNet-18, U-Net, MobileNetV2, YOLOv8n, then GPU benchmarks.
-  -b         Build only; build all targets unless -r selects a group.
 Android builds require ANDROID_NDK_ROOT and host glslc.
 Running Android tests also requires adb and a connected arm64 device.
 Running model tests requires exported ONNX models, inputs, and reference outputs.
@@ -16,13 +16,10 @@ EOF
 }
 platform=macos
 test_mode=unittests
-build_only=false
-group_selected=false
-while getopts ":t:r:bh" option; do
+while getopts ":t:r:h" option; do
   case "$option" in
     t) platform="$OPTARG" ;;
-    r) test_mode="$OPTARG"; group_selected=true ;;
-    b) build_only=true ;;
+    r) test_mode="$OPTARG" ;;
     h) usage; exit 0 ;;
     :) echo "Option -$OPTARG requires a value." >&2; usage >&2; exit 2 ;;
     \?) echo "Unknown option: -$OPTARG" >&2; usage >&2; exit 2 ;;
@@ -38,13 +35,11 @@ case "$platform" in
   *) echo "Unsupported target platform: $platform" >&2; usage >&2; exit 2 ;;
 esac
 case "$test_mode" in
+  0) targets=(vkai_unittests vkai_infer vkai_detect vkai_benchmark) ;;
   unittests) targets=(vkai_unittests) ;;
   models) targets=(vkai_infer vkai_detect vkai_benchmark) ;;
   *) echo "Unknown test group: $test_mode" >&2; usage >&2; exit 2 ;;
 esac
-if [[ "$build_only" == true && "$group_selected" == false ]]; then
-  targets=(vkai_unittests vkai_infer vkai_detect vkai_benchmark)
-fi
 
 project_root="$(cd "$(dirname "$0")/.." && pwd)"
 remote=/data/local/tmp/vkai
@@ -62,7 +57,7 @@ run_cpp_tests() {
 
 if [[ "$platform" == android ]]; then
   : "${ANDROID_NDK_ROOT:?Set ANDROID_NDK_ROOT to an installed Android NDK}"
-  if [[ "$build_only" == false ]]; then
+  if [[ "$test_mode" != 0 ]]; then
     adb get-state >/dev/null
   fi
   host_build="${VKAI_HOST_BUILD_DIR:-$project_root/build}"
@@ -95,7 +90,7 @@ else
   cmake -S "$project_root" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release
 fi
 cmake --build "$build_dir" --target "${targets[@]}" -j "${VKAI_JOBS:-10}"
-if [[ "$build_only" == true ]]; then
+if [[ "$test_mode" == 0 ]]; then
   echo "Build complete: $platform ($build_dir)"
   exit 0
 fi

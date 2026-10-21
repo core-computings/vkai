@@ -51,4 +51,4 @@ jobs:
       - name: Build VKAI, unit tests, and model tools
         run: |
           glslc --version
-          ./scripts/build.sh -t macos -b
+          ./scripts/build.sh -t macos -r 0

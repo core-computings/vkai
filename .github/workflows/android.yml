@@ -14,7 +14,7 @@ concurrency:
 
 env:
   VULKAN_VERSION: "1.4.350.0"
-  NDK_VERSION: "28.2.13676358"
+  NDK_RELEASE: "r28c"
   VKAI_JOBS: "2"
 
 jobs:
@@ -49,23 +49,17 @@ jobs:
           echo "VULKAN_SDK=$RUNNER_TEMP/VulkanSDK/${VULKAN_VERSION}/macOS" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/VulkanSDK/${VULKAN_VERSION}/macOS/bin" >> "$GITHUB_PATH"
 
-      - name: Set up Java
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: "17"
-
+      # Download the native toolchain directly; no Java or SDK manager is needed.
       - name: Install Android NDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: "ndk;${{ env.NDK_VERSION }}"
-
-      - name: Set NDK path
         run: |
-          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
-          test -f "$ANDROID_SDK_ROOT/ndk/$NDK_VERSION/build/cmake/android.toolchain.cmake"
+          curl --fail --location --retry 3 \
+            "https://dl.google.com/android/repository/android-ndk-${NDK_RELEASE}-darwin.zip" \
+            -o "$RUNNER_TEMP/android-ndk.zip"
+          unzip -q "$RUNNER_TEMP/android-ndk.zip" -d "$RUNNER_TEMP"
+          echo "ANDROID_NDK_ROOT=$RUNNER_TEMP/android-ndk-${NDK_RELEASE}" >> "$GITHUB_ENV"
+          test -f "$RUNNER_TEMP/android-ndk-${NDK_RELEASE}/build/cmake/android.toolchain.cmake"
 
       - name: Build VKAI, unit tests, and model tools for arm64-v8a
         run: |
           glslc --version
-          ./scripts/build.sh -t android -b
+          ./scripts/build.sh -t android -r 0

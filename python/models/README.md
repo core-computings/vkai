@@ -43,7 +43,7 @@ uv pip install --python .venv/bin/python -r python/models/requirements-yolo.txt
 ./scripts/build.sh -t android -r models
 ```
 
-默认是 `-t macos -r unittests`，两个选项顺序不限。`unittests` 运行全部通用算子、图执行和加载器测试；`models` 运行上述四个模型，并对 MobileNetV2 / YOLOv8n 做 GPU 计时。
+默认是 `-t macos -r unittests`，两个选项顺序不限。`-r 0` 只编译全部目标，不运行测试，也不需要安卓设备；`unittests` 运行全部通用算子、图执行和加载器测试；`models` 运行上述四个模型，并对 MobileNetV2 / YOLOv8n 做 GPU 计时。
 
 全部单元测试均无需 Python 导出数据或下载模型：C++ 生成确定性输入与 CPU 参考结果，小型 ONNX 测试图在临时目录创建并清理，FlatBuffer 加载器的微型权重由 CMake 从 `assets/weights.json` 自动生成。C++ 测试执行不调用 Python；构建 ONNX 第三方依赖时仍需主机 Python 解释器做代码生成。
 
