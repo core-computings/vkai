@@ -2,6 +2,26 @@
 
 Vulkan AI inference engine for any GPUs, any platforms.
 
+## Workflow
+
+VKAI parses ONNX, infers tensor shapes, and builds a graph. It sorts operations
+by dependency, initializes Vulkan, plans and allocates GPU storage, uploads
+constants, and creates layers and compute pipelines. Inference uploads inputs,
+records commands and barriers, submits work to the GPU, waits for completion,
+and reads back outputs.
+
+![Engine construction workflow](docs/ENGINE_BUILD_FLOW.svg)
+
+The memory plan assigns tensor storage by lifetime. Intermediate tensors reuse
+buffers after their last GPU consumer; reshape views share storage. CPU-only
+parameters receive no graph buffer, while inputs, outputs, and GPU constants
+keep dedicated storage.
+
+![Tensor lifetimes and GPU buffer reuse](docs/MEMORY_PLAN.svg)
+
+See [current model measurements](#model-parameters-memory-and-latency) for
+validation results, memory use, and timings.
+
 ## Setup
 
 Requires CMake ≥3.26, a C++20 compiler, Python 3.11, uv, and the Vulkan SDK
@@ -52,7 +72,6 @@ at least 3 dB against the clean image. Its C++ test saves `<platform>_noisy.png`
 `<platform>_denoised.png`, and `<platform>_comparison.png` in
 `python/models/artifacts/dncnn/`. The comparison shows noisy input, Vulkan output,
 and clean reference. Android renders these images on the device and pulls them back.
-See the [DnCNN run report](python/models/DNCNN_REPORT.md) for results and timings.
 
 ```bash
 # macOS
@@ -67,25 +86,24 @@ adb devices
 ```
 
 Default: `-t macos -r unittests`. `models` validates all five networks and benchmarks
-MobileNetV2 / YOLOv8n / DnCNN. Both platforms pass all 87 unit tests and all five model tests.
+MobileNetV2 / YOLOv8n / DnCNN. Both platforms pass all 99 unit tests and all five model tests.
 See [model instructions](python/models/README.md) for output files and individual runs.
 
 For compilation only (as in CI), use `./scripts/build.sh -t macos -r 0` or
 `./scripts/build.sh -t android -r 0`. This builds all targets without running tests;
 no model data or Android device is required.
 
-## GPU inference time
+## Model parameters, memory, and latency
 
-Recorded on 2026-10-21: Release, FP32, batch=1, default clocks; averages of 30 runs
-after 5 warm-up runs. GPU timestamps cover the complete network graph, excluding
-model loading, CPU submission, input/output transfers, preprocessing, and postprocessing.
-DnCNN submits eight operators at a time to stay below the Android GPU watchdog limit;
-its reported GPU time sums all five submissions and excludes host gaps between them.
+Measured on 2026-10-21 using the current optimized code: Release, FP32, batch=1,
+RGB input, default clocks. Both macOS 27.0.1 / Apple M6 / MoltenVK and
+Android 13 / Adreno 740 passed **99/99 unit tests and 5/5 model tests**.
+GPU times are the mean of 30 runs after 5 warm-up runs.
 
-| Model | Input | macOS / Apple M6 / MoltenVK | Android 13 / Adreno 740 |
-| --- | --- | ---: | ---: |
-| ResNet-18 | 224×224 | 18.23 ms | 128.53 ms |
-| U-Net | 256×256 | 138.80 ms | 1013.17 ms |
-| MobileNetV2 | 224×224 | 5.41 ms | 38.31 ms |
-| YOLOv8n | 640×640 | 48.37 ms | 358.68 ms |
-| DnCNN | 256×256 RGB | 390.85 ms | 3156.68 ms |
+| Model       | Input   | Parameters | Vulkan memory (MiB) | macOS GPU (ms) | Android GPU (ms) |
+| ----------- | ------- | ----------: | -------------------: | --------------: | ----------------: |
+| ResNet-18   | 224×224 | 11,689,512 | 52.08               | 18.17          | 135.73           |
+| U-Net       | 256×256 | 7,763,041  | 85.13               | 138.82         | 1075.42          |
+| MobileNetV2 | 224×224 | 3,504,872  | 26.28               | 7.46           | 36.43            |
+| YOLOv8n     | 640×640 | 3,151,904  | 49.27               | 46.85          | 358.86           |
+| DnCNN       | 256×256 | 668,227    | 36.05               | 393.90         | 3143.81          |

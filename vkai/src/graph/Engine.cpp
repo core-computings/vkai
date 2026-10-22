@@ -22,44 +22,44 @@ Engine::Engine(const std::string& onnx_path, size_t operations_per_submission)
   context_ = std::make_unique<core::vulkan::VulkanContext>(
       false, core::vulkan::QueueFamilyType::Compute, VK_NULL_HANDLE);
   context_->Init();
-  AllocateVulkanBuffers();
-  UploadWeights();
+  const auto memory_plan = BuildMemoryPlan(graph_, topo_order_);
+  AllocateVulkanBuffers(memory_plan);
+  UploadConstants(memory_plan);
   CreatePipeline();
 
   for (const auto& operation : topo_order_) {
-    if (layers_.contains(operation->Name())) {
+    if (layers_.contains(operation->Name()) && operation->Type() != OpType::Reshape) {
       execution_order_.push_back(operation);
     }
   }
 }
 
-void Engine::AllocateVulkanBuffers() {
-  for (const auto& entry : graph_.Tensors()) {
-    const auto& tensor = entry.second;
-    const VkDeviceSize byte_size =
-        static_cast<VkDeviceSize>(TensorElementCount(*tensor)) * sizeof(float);
-
-    core::vulkan::VulkanBuffer buffer(context_.get(), byte_size,
-                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                          VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                      kHostVisibleMemory);
-    tensor->SetBuffer(std::move(buffer));
+void Engine::AllocateVulkanBuffers(const MemoryPlan& plan) {
+  std::vector<std::shared_ptr<core::vulkan::VulkanBuffer>> buffers;
+  buffers.reserve(plan.slots.size());
+  for (const auto& slot : plan.slots) {
+    buffers.push_back(std::make_shared<core::vulkan::VulkanBuffer>(
+        context_.get(), slot.capacity,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        kHostVisibleMemory));
+  }
+  for (const auto& [name, tensor] : graph_.Tensors()) {
+    const auto assignment = plan.tensor_slots.find(tensor.get());
+    if (assignment != plan.tensor_slots.end()) tensor->SetBuffer(buffers.at(assignment->second));
   }
 }
 
-void Engine::UploadWeights() {
-  for (const auto& [name, tensor] : graph_.Tensors()) {
-    if (!tensor->HasData() || tensor->Data().empty()) {
-      continue;
-    }
+void Engine::UploadConstants(const MemoryPlan& plan) {
+  for (const auto& tensor : plan.constants) {
+    const auto& name = tensor->Name();
     if (!tensor->HasBuffer()) {
       throw std::runtime_error("Cannot upload tensor data without a Vulkan buffer: " + name);
     }
 
     const auto& data = tensor->Data();
     auto& buffer = tensor->Buffer();
-    if (buffer.Size() != data.size() * sizeof(float)) {
+    if (tensor->ByteSize() != data.size() * sizeof(float)) {
       throw std::runtime_error("Tensor data size does not match Vulkan buffer size: " + name);
     }
     buffer.MapData([&data](void* mapped_data) {
@@ -223,7 +223,7 @@ InferenceBenchmark Engine::BenchmarkGraph(int warmup_runs, int measured_runs) {
 
 void Engine::CopyOutputs() {
   for (const auto& output : graph_.Outputs()) {
-    std::vector<float> data(output->Buffer().Size() / sizeof(float));
+    std::vector<float> data(static_cast<size_t>(TensorElementCount(*output)));
     output->Buffer().MapData(
         [&data](void* mapped) { std::memcpy(data.data(), mapped, data.size() * sizeof(float)); });
     output->PopulateTensor(std::move(data));
