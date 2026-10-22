@@ -78,6 +78,7 @@ std::optional<OpType> GetOpType(const std::string& onnx_type) {
       {"Softmax", OpType::Softmax},
       {"ConvTranspose", OpType::ConvTranspose2D},
       {"Sigmoid", OpType::Sigmoid},
+      {"HardSigmoid", OpType::HardSigmoid},
       {"Clip", OpType::Clip},
       {"Mul", OpType::Mul},
       {"Sub", OpType::Sub},
@@ -109,6 +110,7 @@ std::string InputRole(OpType type, size_t index) {
       {OpType::Softmax, {"input"}},
       {OpType::ConvTranspose2D, {"input", "weights", "bias"}},
       {OpType::Sigmoid, {"input"}},
+      {OpType::HardSigmoid, {"input"}},
       {OpType::Clip, {"input", "min", "max"}},
       {OpType::Mul, {"input", "rhs"}},
       {OpType::Sub, {"input", "rhs"}},
@@ -116,6 +118,7 @@ std::string InputRole(OpType type, size_t index) {
       {OpType::Slice, {"input", "starts", "ends", "axes", "steps"}},
       {OpType::Transpose, {"input"}},
       {OpType::NearestResize2D, {"input", "roi", "scales", "sizes"}},
+      {OpType::BilinearResize2D, {"input", "roi", "scales", "sizes"}},
       {OpType::BatchNorm2D, {"input", "scale", "bias", "mean", "variance"}},
       {OpType::AdaptiveAvgPool2D, {"input"}},
   };
@@ -286,7 +289,12 @@ Graph BuildGraphFromONNX(const std::string& filename) {
       if (start != shape[axis]) throw std::runtime_error("Split extents do not cover input");
       continue;
     }
-    const auto type = GetOpType(node.op_type());
+    auto type = GetOpType(node.op_type());
+    if (node.op_type() == "Resize") {
+      for (const auto& attribute : node.attribute())
+        if (attribute.name() == "mode" && attribute.s() == "linear")
+          type = OpType::BilinearResize2D;
+    }
     if (!type.has_value()) {
       throw std::runtime_error("Unsupported ONNX operator: " + node.op_type());
     }

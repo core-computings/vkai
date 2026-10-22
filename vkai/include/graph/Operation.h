@@ -18,6 +18,7 @@ enum class OpType {
   Conv2D,
   ConvTranspose2D,
   Sigmoid,
+  HardSigmoid,
   Clip,
   Mul,
   Sub,

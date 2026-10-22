@@ -359,4 +359,74 @@ TEST(NearestResize2DTest, DownsamplesUsingSizes) {
   Model::String(node, "nearest_mode", "floor");
   model.Check({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}, {0, 1, 3, 5, 6, 8});
 }
+
+TEST(ONNXExecutionTest, HardSigmoidDefaultsAndCustomAttributes) {
+  Model defaults({1, 7}, {1, 7});
+  defaults.Node("HardSigmoid", {"input"});
+  defaults.Check({-10, -2.5F, -1, 0, 1, 2.5F, 10}, {0, 0, .3F, .5F, .7F, 1, 1});
+  Model custom({1, 7}, {1, 7});
+  auto* node = custom.Node("HardSigmoid", {"input"}, "gate");
+  Model::Float(node, "alpha", 1.F / 6);
+  Model::Float(node, "beta", .5F);
+  custom.Node("Mul", {"input", "gate"});
+  custom.Check({-6, -3, -1.5F, 0, 1.5F, 3, 6}, {0, 0, -.375F, 0, 1.125F, 3, 6});
+}
+
+TEST(ONNXExecutionTest, HardSigmoidSupportsNegativeAndZeroAlpha) {
+  for (float alpha : {-.5F, 0.F}) {
+    Model model({1, 3}, {1, 3});
+    auto* node = model.Node("HardSigmoid", {"input"});
+    Model::Float(node, "alpha", alpha);
+    Model::Float(node, "beta", .25F);
+    model.Check({-2, 0, 2},
+                alpha == 0 ? std::vector<float>{.25F, .25F, .25F} : std::vector<float>{1, .25F, 0});
+  }
+}
+
+TEST(ONNXExecutionTest, BilinearResizeHalfPixelScalesAndSingletonOutput) {
+  Model model({1, 1, 2, 2}, {1, 1, 4, 4});
+  model.Weight("scales", {4}, {1, 1, 2, 2});
+  auto* node = model.Node("Resize", {"input", "", "scales"});
+  Model::String(node, "mode", "linear");
+  model.Check({0, 4, 8, 12}, {0, 1, 3, 4, 2, 3, 5, 6, 6, 7, 9, 10, 8, 9, 11, 12});
+  Model down({1, 1, 2, 2}, {1, 1, 1, 1});
+  down.IntWeight("sizes", {4}, {1, 1, 1, 1});
+  node = down.Node("Resize", {"input", "", "", "sizes"});
+  Model::String(node, "mode", "linear");
+  down.Check({0, 4, 8, 12}, {6});
+}
+
+TEST(ONNXExecutionTest, BilinearResizeSizesAcrossBatchesChannelsAndNonSquareShapes) {
+  Model model({2, 2, 1, 2}, {2, 2, 3, 3});
+  model.IntWeight("sizes", {4}, {2, 2, 3, 3});
+  auto* node = model.Node("Resize", {"input", "", "", "sizes"});
+  Model::String(node, "mode", "linear");
+  Model::String(node, "coordinate_transformation_mode", "half_pixel");
+  std::vector<float> expected;
+  for (int plane = 0; plane < 4; ++plane)
+    for (int y = 0; y < 3; ++y)
+      for (float offset : {0.F, 1.F, 2.F}) expected.push_back(plane * 10 + offset);
+  model.Check({0, 2, 10, 12, 20, 22, 30, 32}, expected);
+}
+
+TEST(ONNXExecutionTest, ResizeRejectsUnsupportedModesCoordinatesAndChannelResize) {
+  for (const std::string coordinate : {"align_corners", "asymmetric", "tf_crop_and_resize"}) {
+    Model model({1, 1, 2, 2}, {1, 1, 4, 4});
+    model.IntWeight("sizes", {4}, {1, 1, 4, 4});
+    auto* node = model.Node("Resize", {"input", "", "", "sizes"});
+    Model::String(node, "mode", "linear");
+    Model::String(node, "coordinate_transformation_mode", coordinate);
+    EXPECT_THROW(vkai::Engine(model.Save()), std::runtime_error);
+  }
+  Model cubic({1, 1, 2, 2}, {1, 1, 4, 4});
+  cubic.IntWeight("sizes", {4}, {1, 1, 4, 4});
+  auto* node = cubic.Node("Resize", {"input", "", "", "sizes"});
+  Model::String(node, "mode", "cubic");
+  EXPECT_THROW(vkai::Engine(cubic.Save()), std::runtime_error);
+  Model channels({1, 1, 2, 2}, {1, 2, 2, 2});
+  channels.IntWeight("sizes", {4}, {1, 2, 2, 2});
+  node = channels.Node("Resize", {"input", "", "", "sizes"});
+  Model::String(node, "mode", "linear");
+  EXPECT_THROW(vkai::Engine(channels.Save()), std::runtime_error);
+}
 }  // namespace
