@@ -14,6 +14,7 @@ endif()
 target_include_directories(vkai_unittests
     PRIVATE
         "${CMAKE_SOURCE_DIR}/external/flatbuffers/include"
+        "${CMAKE_SOURCE_DIR}/tasks"
 )
 
 add_dependencies(vkai_unittests GENERATE_vkai_flatbuffers vkai_weights_target)

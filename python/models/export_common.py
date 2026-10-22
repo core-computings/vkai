@@ -56,6 +56,7 @@ def export(name, model, x, folder, extra, optimize=False):
     )
     (folder / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
     print(json.dumps(meta, indent=2), flush=True)
+    return y
 
 
 def export_classifier(name, model, weights, folder):

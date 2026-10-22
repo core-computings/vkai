@@ -34,10 +34,11 @@ case "$platform" in
   macos|android) ;;
   *) echo "Unsupported target platform: $platform" >&2; usage >&2; exit 2 ;;
 esac
+model_targets=(vkai_resnet18_test vkai_unet_test vkai_mobilenet_v2_test vkai_yolov8n_test)
 case "$test_mode" in
-  0) targets=(vkai_unittests vkai_infer vkai_detect vkai_benchmark) ;;
+  0) targets=(vkai_unittests "${model_targets[@]}") ;;
   unittests) targets=(vkai_unittests) ;;
-  models) targets=(vkai_infer vkai_detect vkai_benchmark) ;;
+  models) targets=("${model_targets[@]}") ;;
   *) echo "Unknown test group: $test_mode" >&2; usage >&2; exit 2 ;;
 esac
 
@@ -46,12 +47,74 @@ remote=/data/local/tmp/vkai
 
 run_cpp_tests() {
   local executable="$1"
+  shift
   if [[ "$platform" == android ]]; then
-    adb push "$executable" "$remote/"
+    adb push "$executable" "$remote/" >&2
     local name="${executable##*/}"
-    adb shell "chmod 755 $remote/$name && $remote/$name"
+    adb shell "chmod 755 $remote/$name"
+    adb shell "$remote/$name" "$@"
   else
-    "$executable"
+    "$executable" "$@"
+  fi
+}
+
+run_model_test() {
+  local model="$1"
+  local folder="$project_root/python/models/artifacts/$model"
+  local runtime_folder="$folder"
+  local executable="$build_dir/tasks/vkai_${model}_test"
+  local required=(model.onnx input.bin reference.bin)
+  if [[ "$model" == yolov8n ]]; then
+    required+=(reference_detections.txt input.jpg)
+  fi
+  local file
+  for file in "${required[@]}"; do
+    if [[ ! -f "$folder/$file" ]]; then
+      echo "Missing $folder/$file. Run python/models/export_$model.py first." >&2
+      return 1
+    fi
+  done
+  if [[ "$platform" == android ]]; then
+    runtime_folder="$remote/models/$model"
+    adb shell "mkdir -p $runtime_folder"
+    for file in "${required[@]}"; do
+      adb push "$folder/$file" "$runtime_folder/" >&2
+    done
+  fi
+  local args=("$runtime_folder/model.onnx" "$runtime_folder/input.bin"
+              "$runtime_folder/$platform.bin")
+  if [[ "$model" == yolov8n ]]; then
+    args+=("$runtime_folder/${platform}_detections.json")
+  fi
+  args+=("$runtime_folder/reference.bin")
+  if [[ "$model" == yolov8n ]]; then
+    args+=("$runtime_folder/reference_detections.txt" "$runtime_folder/input.jpg"
+           "$runtime_folder/${platform}_detections.png")
+  fi
+  run_cpp_tests "$executable" "${args[@]}" | tee "$folder/${platform}_validation.json"
+  if [[ "$platform" == android ]]; then
+    adb pull "$runtime_folder/$platform.bin" "$folder/$platform.bin" >&2
+    if [[ "$model" == yolov8n ]]; then
+      adb pull "$runtime_folder/${platform}_detections.json" \
+        "$folder/${platform}_detections.json" >&2
+      adb pull "$runtime_folder/${platform}_detections.png" \
+        "$folder/${platform}_detections.png" >&2
+    fi
+  fi
+}
+
+run_model_benchmark() {
+  local model="$1"
+  local folder="$project_root/python/models/artifacts/$model"
+  if [[ "$platform" == android ]]; then
+    local runtime_folder="$remote/models/$model"
+    adb shell "$remote/vkai_${model}_test" --benchmark "$runtime_folder/model.onnx" \
+      "$runtime_folder/input.bin" "$runtime_folder/reference.bin" 5 30 \
+      | tee "$folder/${platform}_benchmark.json"
+  else
+    "$build_dir/tasks/vkai_${model}_test" --benchmark "$folder/model.onnx" \
+      "$folder/input.bin" "$folder/reference.bin" 5 30 \
+      | tee "$folder/${platform}_benchmark.json"
   fi
 }
 
@@ -104,12 +167,12 @@ case "$test_mode" in
     run_cpp_tests "$build_dir/tests/vkai_unittests"
     ;;
   models)
-    "${VKAI_PYTHON:-$project_root/.venv/bin/python}" "$project_root/python/models/validate_models.py" \
-      --platform "$platform" --runner "$build_dir/tasks/vkai_infer" --models resnet18 unet mobilenet_v2
-    "${VKAI_PYTHON:-$project_root/.venv/bin/python}" "$project_root/python/models/validate_yolov8n.py" \
-      --platform "$platform" --runner "$build_dir/tasks/vkai_detect"
-    "${VKAI_PYTHON:-$project_root/.venv/bin/python}" "$project_root/python/models/benchmark_models.py" \
-      --platform "$platform" --runner "$build_dir/tasks/vkai_benchmark"
+    for model in resnet18 unet mobilenet_v2 yolov8n; do
+      run_model_test "$model"
+    done
+    for model in mobilenet_v2 yolov8n; do
+      run_model_benchmark "$model"
+    done
     ;;
 esac
 echo "PASS: $platform $test_mode"
