@@ -158,6 +158,36 @@ TEST(ONNXExecutionTest, GpuBenchmarkPreservesGraphResultsAndValidatesCounts) {
   EXPECT_THROW(engine.BenchmarkGraph(0, 0), std::invalid_argument);
 }
 
+TEST(ONNXExecutionTest, SplitSubmissionsPreserveResidualDependenciesAndGpuTimings) {
+  Model model({1, 2}, {1, 2});
+  model.Weight("scale", {}, {2});
+  model.Weight("offset", {1, 2}, {-.25F, .5F});
+  model.Node("Mul", {"input", "scale"}, "scaled");
+  model.Node("Relu", {"scaled"}, "activated");
+  model.Node("Sub", {"input", "activated"}, "residual");
+  model.Node("Add", {"residual", "offset"});
+  const auto path = model.Save();
+  for (size_t limit : {1U, 3U, 99U}) {
+    SCOPED_TRACE(limit);
+    vkai::Engine engine(path, limit);
+    engine.GetInputTensor()->PopulateTensor({-1, 2});
+    engine.ExecuteGraph();
+    EXPECT_EQ(engine.GetOutputTensor()->Data(), (std::vector<float>{-1.25F, -1.5F}));
+    const auto result = engine.BenchmarkGraph(1, 3);
+    EXPECT_EQ(result.submissions_per_run, 1 + 3 / limit);
+    ASSERT_EQ(result.gpu_ms.size(), 3U);
+    for (double ms : result.gpu_ms) {
+      EXPECT_TRUE(std::isfinite(ms));
+      EXPECT_GT(ms, 0);
+    }
+    EXPECT_EQ(engine.GetOutputTensor()->Data(), (std::vector<float>{-1.25F, -1.5F}));
+    engine.GetInputTensor()->PopulateTensor({.5F, -2});
+    engine.ExecuteGraph();
+    EXPECT_EQ(engine.GetOutputTensor()->Data(), (std::vector<float>{-.75F, -1.5F}));
+  }
+  EXPECT_THROW(vkai::Engine(path, 0), std::invalid_argument);
+}
+
 namespace {
 void CheckGroupedConvolution(int ic, int oc, int groups) {
   constexpr int n = 2, h = 5, w = 4, kh = 3, kw = 2, sh = 2, sw = 1, ph = 1, pw = 0, dh = 1, dw = 2;

@@ -1,5 +1,6 @@
 #include "graph/Engine.h"
 
+#include <algorithm>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -13,7 +14,10 @@
 
 namespace vkai {
 
-Engine::Engine(const std::string& onnx_path) : graph_(BuildGraphFromONNX(onnx_path)) {
+Engine::Engine(const std::string& onnx_path, size_t operations_per_submission)
+    : graph_(BuildGraphFromONNX(onnx_path)), operations_per_submission_(operations_per_submission) {
+  if (operations_per_submission_ == 0)
+    throw std::invalid_argument("Operations per submission must be positive");
   topo_order_ = graph_.TopologicalSort();
   context_ = std::make_unique<core::vulkan::VulkanContext>(
       false, core::vulkan::QueueFamilyType::Compute, VK_NULL_HANDLE);
@@ -83,8 +87,9 @@ void Engine::UploadInputs() {
   }
 }
 
-void Engine::RecordOperations(VkCommandBuffer command) {
-  for (const auto& operation : execution_order_) {
+void Engine::RecordOperations(VkCommandBuffer command, size_t first, size_t count) {
+  for (size_t i = first; i < first + count; ++i) {
+    const auto& operation = execution_order_[i];
     auto& layer = *layers_.at(operation->Name());
     RecordLayer(layer, *operation, command);
     Synchronization::InsertComputeBarrier(command);
@@ -93,12 +98,29 @@ void Engine::RecordOperations(VkCommandBuffer command) {
 
 void Engine::ExecuteGraph() {
   UploadInputs();
-  auto command = core::vulkan::VulkanCommandBuffer::BeginOneTimeCommands(context_.get());
-  RecordOperations(command.buffer());
-  for (const auto& output : graph_.Outputs()) {
-    Synchronization::InsertHostReadBarrier(command.buffer(), output->Buffer());
-  }
-  command.EndOneTimeCommands();
+  core::vulkan::VulkanFence fence(context_.get());
+  size_t first = 0;
+  do {
+    const size_t count = std::min(operations_per_submission_, execution_order_.size() - first);
+    auto command = core::vulkan::VulkanCommandBuffer::BeginOneTimeCommands(context_.get());
+    RecordOperations(command.buffer(), first, count);
+    first += count;
+    if (first == execution_order_.size()) {
+      for (const auto& output : graph_.Outputs())
+        Synchronization::InsertHostReadBarrier(command.buffer(), output->Buffer());
+    }
+    if (vkEndCommandBuffer(command.buffer()) != VK_SUCCESS)
+      throw std::runtime_error("Cannot record graph command buffer");
+    const VkCommandBuffer raw_command = command.buffer();
+    const VkSubmitInfo submit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                              .commandBufferCount = 1,
+                              .pCommandBuffers = &raw_command};
+    fence.Reset();
+    if (vkQueueSubmit(context_->compute_queue(), 1, &submit, fence.fence) != VK_SUCCESS ||
+        vkWaitForFences(context_->logical_device, 1, &fence.fence, VK_TRUE, UINT64_MAX) !=
+            VK_SUCCESS)
+      throw std::runtime_error("GPU graph submission failed");
+  } while (first < execution_order_.size());
   CopyOutputs();
 }
 
@@ -119,8 +141,16 @@ InferenceBenchmark Engine::BenchmarkGraph(int warmup_runs, int measured_runs) {
   if (valid_bits == 0 || properties.limits.timestampPeriod <= 0) {
     throw std::runtime_error("Compute queue does not support GPU timestamps");
   }
-  InferenceBenchmark result{
-      properties.deviceName, valid_bits, properties.limits.timestampPeriod, {}};
+  const size_t submissions =
+      execution_order_.empty() ? 1 : 1 + (execution_order_.size() - 1) / operations_per_submission_;
+  if (submissions > std::numeric_limits<uint32_t>::max() / 2)
+    throw std::runtime_error("Too many GPU timestamp queries");
+  const uint32_t query_count = static_cast<uint32_t>(submissions) * 2;
+  InferenceBenchmark result{properties.deviceName,
+                            valid_bits,
+                            properties.limits.timestampPeriod,
+                            {},
+                            static_cast<uint32_t>(submissions)};
   result.gpu_ms.reserve(measured_runs);
   UploadInputs();
 
@@ -133,43 +163,58 @@ InferenceBenchmark Engine::BenchmarkGraph(int warmup_runs, int measured_runs) {
   } query{context_->logical_device};
   const VkQueryPoolCreateInfo query_info{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
                                          .queryType = VK_QUERY_TYPE_TIMESTAMP,
-                                         .queryCount = 2};
+                                         .queryCount = query_count};
   if (vkCreateQueryPool(query.device, &query_info, nullptr, &query.handle) != VK_SUCCESS) {
     throw std::runtime_error("Cannot create GPU timestamp query pool");
   }
-  core::vulkan::VulkanCommandBuffer command(context_.get());
-  command.BeginCommandBuffer();
-  vkCmdResetQueryPool(command.buffer(), query.handle, 0, 2);
-  vkCmdWriteTimestamp(command.buffer(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, query.handle, 0);
-  RecordOperations(command.buffer());
-  vkCmdWriteTimestamp(command.buffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query.handle, 1);
-  for (const auto& output : graph_.Outputs()) {
-    Synchronization::InsertHostReadBarrier(command.buffer(), output->Buffer());
+  std::vector<core::vulkan::VulkanCommandBuffer> commands;
+  commands.reserve(submissions);
+  size_t first = 0;
+  for (uint32_t chunk = 0; chunk < submissions; ++chunk) {
+    auto& command = commands.emplace_back(context_.get());
+    command.BeginCommandBuffer();
+    vkCmdResetQueryPool(command.buffer(), query.handle, chunk * 2, 2);
+    vkCmdWriteTimestamp(command.buffer(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, query.handle,
+                        chunk * 2);
+    const size_t count = std::min(operations_per_submission_, execution_order_.size() - first);
+    RecordOperations(command.buffer(), first, count);
+    first += count;
+    vkCmdWriteTimestamp(command.buffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, query.handle,
+                        chunk * 2 + 1);
+    if (first == execution_order_.size()) {
+      for (const auto& output : graph_.Outputs())
+        Synchronization::InsertHostReadBarrier(command.buffer(), output->Buffer());
+    }
+    if (vkEndCommandBuffer(command.buffer()) != VK_SUCCESS)
+      throw std::runtime_error("Cannot record benchmark command buffer");
   }
-  if (vkEndCommandBuffer(command.buffer()) != VK_SUCCESS) {
-    throw std::runtime_error("Cannot record benchmark command buffer");
-  }
-  const VkCommandBuffer raw_command = command.buffer();
-  const VkSubmitInfo submit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                            .commandBufferCount = 1,
-                            .pCommandBuffers = &raw_command};
   core::vulkan::VulkanFence fence(context_.get());
   const uint64_t mask = valid_bits == 64 ? UINT64_MAX : (uint64_t{1} << valid_bits) - 1;
+  std::vector<uint64_t> timestamps(query_count);
   for (int run = 0; run < warmup_runs + measured_runs; ++run) {
-    fence.Reset();
-    if (vkQueueSubmit(context_->compute_queue(), 1, &submit, fence.fence) != VK_SUCCESS ||
-        vkWaitForFences(query.device, 1, &fence.fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
-      throw std::runtime_error("GPU benchmark submission failed");
+    for (const auto& command : commands) {
+      const VkCommandBuffer raw_command = command.buffer();
+      const VkSubmitInfo submit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                                .commandBufferCount = 1,
+                                .pCommandBuffers = &raw_command};
+      fence.Reset();
+      if (vkQueueSubmit(context_->compute_queue(), 1, &submit, fence.fence) != VK_SUCCESS ||
+          vkWaitForFences(query.device, 1, &fence.fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+        throw std::runtime_error("GPU benchmark submission failed");
     }
-    uint64_t timestamps[2]{};
-    if (vkGetQueryPoolResults(query.device, query.handle, 0, 2, sizeof(timestamps), timestamps,
+    if (vkGetQueryPoolResults(query.device, query.handle, 0, query_count,
+                              timestamps.size() * sizeof(uint64_t), timestamps.data(),
                               sizeof(uint64_t),
                               VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) != VK_SUCCESS) {
       throw std::runtime_error("Cannot read GPU timestamp results");
     }
     if (run >= warmup_runs) {
-      const uint64_t ticks = (timestamps[1] - timestamps[0]) & mask;
-      result.gpu_ms.push_back(static_cast<double>(ticks) * result.timestamp_period_ns / 1e6);
+      double elapsed_ms = 0;
+      for (size_t chunk = 0; chunk < submissions; ++chunk) {
+        const uint64_t ticks = (timestamps[chunk * 2 + 1] - timestamps[chunk * 2]) & mask;
+        elapsed_ms += static_cast<double>(ticks) * result.timestamp_period_ns / 1e6;
+      }
+      result.gpu_ms.push_back(elapsed_ms);
     }
   }
   CopyOutputs();

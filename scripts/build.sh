@@ -8,7 +8,7 @@ Usage: $0 [-t {macos|android}] [-r {0|unittests|models}] [-h]
 Build and run the selected tests. Defaults: -t macos -r unittests.
   0          Build all targets without running tests or models.
   unittests  Run all unit tests.
-  models     Run ResNet-18, U-Net, MobileNetV2, YOLOv8n, then GPU benchmarks.
+  models     Run ResNet-18, U-Net, MobileNetV2, YOLOv8n, DnCNN, then GPU benchmarks.
 Android builds require ANDROID_NDK_ROOT and host glslc.
 Running Android tests also requires adb and a connected arm64 device.
 Running model tests requires exported ONNX models, inputs, and reference outputs.
@@ -34,7 +34,8 @@ case "$platform" in
   macos|android) ;;
   *) echo "Unsupported target platform: $platform" >&2; usage >&2; exit 2 ;;
 esac
-model_targets=(vkai_resnet18_test vkai_unet_test vkai_mobilenet_v2_test vkai_yolov8n_test)
+model_targets=(vkai_resnet18_test vkai_unet_test vkai_mobilenet_v2_test vkai_yolov8n_test
+               vkai_dncnn_test)
 case "$test_mode" in
   0) targets=(vkai_unittests "${model_targets[@]}") ;;
   unittests) targets=(vkai_unittests) ;;
@@ -66,6 +67,8 @@ run_model_test() {
   local required=(model.onnx input.bin reference.bin)
   if [[ "$model" == yolov8n ]]; then
     required+=(reference_detections.txt input.jpg)
+  elif [[ "$model" == dncnn ]]; then
+    required+=(clean.bin)
   fi
   local file
   for file in "${required[@]}"; do
@@ -90,6 +93,8 @@ run_model_test() {
   if [[ "$model" == yolov8n ]]; then
     args+=("$runtime_folder/reference_detections.txt" "$runtime_folder/input.jpg"
            "$runtime_folder/${platform}_detections.png")
+  elif [[ "$model" == dncnn ]]; then
+    args+=("$runtime_folder/clean.bin")
   fi
   run_cpp_tests "$executable" "${args[@]}" | tee "$folder/${platform}_validation.json"
   if [[ "$platform" == android ]]; then
@@ -99,6 +104,11 @@ run_model_test() {
         "$folder/${platform}_detections.json" >&2
       adb pull "$runtime_folder/${platform}_detections.png" \
         "$folder/${platform}_detections.png" >&2
+    elif [[ "$model" == dncnn ]]; then
+      for file in noisy denoised comparison; do
+        adb pull "$runtime_folder/${platform}_$file.png" \
+          "$folder/${platform}_$file.png" >&2
+      done
     fi
   fi
 }
@@ -167,10 +177,10 @@ case "$test_mode" in
     run_cpp_tests "$build_dir/tests/vkai_unittests"
     ;;
   models)
-    for model in resnet18 unet mobilenet_v2 yolov8n; do
+    for model in resnet18 unet mobilenet_v2 yolov8n dncnn; do
       run_model_test "$model"
     done
-    for model in mobilenet_v2 yolov8n; do
+    for model in mobilenet_v2 yolov8n dncnn; do
       run_model_benchmark "$model"
     done
     ;;
