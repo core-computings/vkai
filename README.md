@@ -104,21 +104,16 @@ no model data or Android device is required.
 
 ## Model parameters, memory, and latency
 
-Measured on 2026-10-21 using the current optimized code: Release, FP32, batch=1,
+Measured on 2026-10-21 and 2026-10-22 using the current optimized code: Release, FP32, batch=1,
 RGB input, default clocks. Both macOS 27.0.1 / Apple M6 / MoltenVK and
-Android 13 / Adreno 740 passed **99/99 unit tests and 5/5 model tests**.
+Android 13 / Adreno 740 passed **110/110 unit tests and 6/6 model tests**.
 GPU times are the mean of 30 runs after 5 warm-up runs.
 
-| Model       | Input   | Parameters | Vulkan memory (MiB) | macOS GPU (ms) | Android GPU (ms) |
-| ----------- | ------- | ----------: | -------------------: | --------------: | ----------------: |
-| ResNet-18   | 224×224 | 11,689,512 | 52.08               | 18.17          | 135.73           |
-| U-Net       | 256×256 | 7,763,041  | 85.13               | 138.82         | 1075.42          |
-| MobileNetV2 | 224×224 | 3,504,872  | 26.28               | 7.46           | 36.43            |
-| YOLOv8n     | 640×640 | 3,151,904  | 49.27               | 46.85          | 358.86           |
-| DnCNN       | 256×256 | 668,227    | 36.05               | 393.90         | 3143.81          |
-
-LR-ASPP / MobileNetV3-Large was added and measured on 2026-10-22: 320×320 input,
-3,221,538 parameters, mean GPU time **12.56 ms on macOS / 87.58 ms on Android**
-(5 warm-up runs, 30 measured runs). Both platforms match the PyTorch argmax mask
-exactly. See the [LR-ASPP report](python/models/LRASPP_REPORT.md) for numerical
-errors, test coverage, and visualization outputs.
+| Model                     | Input   | Parameters | Vulkan memory (MiB) | macOS GPU (ms) | Android GPU (ms) |
+| ------------------------- | ------- | ----------: | -------------------: | --------------: | ----------------: |
+| ResNet-18                 | 224×224 | 11,689,512 | 52.08               | 18.17          | 135.73           |
+| U-Net                     | 256×256 | 7,763,041  | 85.13               | 138.82         | 1075.42          |
+| MobileNetV2               | 224×224 | 3,504,872  | 26.28               | 7.46           | 36.43            |
+| YOLOv8n                   | 640×640 | 3,151,904  | 49.27               | 46.85          | 358.86           |
+| DnCNN                     | 256×256 | 668,227    | 36.05               | 393.90         | 3143.81          |
+| LR-ASPP / MobileNetV3-Large | 320×320 | 3,221,538  | 38.82               | 12.56          | 87.58            |
