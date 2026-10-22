@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -16,13 +17,17 @@ struct InferenceBenchmark {
   uint32_t timestamp_valid_bits;
   float timestamp_period_ns;
   std::vector<double> gpu_ms;
+  uint32_t submissions_per_run;
 };
 
 class Engine {
  public:
   // Loads the ONNX model and builds its graph. Loading errors propagate as
   // std::runtime_error from the ONNX loader.
-  explicit Engine(const std::string& onnx_path);
+  // Bound each submission for devices with a GPU job watchdog. The default
+  // records the whole graph in one submission.
+  explicit Engine(const std::string& onnx_path,
+                  size_t operations_per_submission = std::numeric_limits<size_t>::max());
 
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
@@ -47,13 +52,14 @@ class Engine {
   void ExecuteGraph();
 
   // Uploads inputs once and reuses a recorded command buffer. GPU timestamps
-  // bracket the complete graph, including its internal barriers/copies, while
+  // cover every submission, including its internal barriers/copies, while
   // excluding model setup, host recording/submission and input/output copies.
+  // Durations are summed across submissions, excluding host waits between them.
   // Runs synchronously and copies the final result to output tensor Data().
   InferenceBenchmark BenchmarkGraph(int warmup_runs = 5, int measured_runs = 30);
 
  private:
-  void RecordOperations(VkCommandBuffer command);
+  void RecordOperations(VkCommandBuffer command, size_t first, size_t count);
 
   void AllocateVulkanBuffers();
 
@@ -74,6 +80,7 @@ class Engine {
 
   // Only operations with runtime layers, in dependency order.
   std::vector<std::shared_ptr<Operation>> execution_order_;
+  size_t operations_per_submission_;
 
   std::unordered_map<std::string, std::unique_ptr<Layer>> layers_;
 };

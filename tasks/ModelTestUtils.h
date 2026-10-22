@@ -56,12 +56,42 @@ inline OutputComparison CompareOutput(const std::vector<float>& actual,
     if (!std::isfinite(actual[i]) || !std::isfinite(reference[i]) ||
         error > 1e-3F + 1e-3F * std::abs(reference[i])) {
       throw std::runtime_error("Model output differs from reference at element " +
-                               std::to_string(i));
+                               std::to_string(i) + ": actual=" + std::to_string(actual[i]) +
+                               ", reference=" + std::to_string(reference[i]) +
+                               ", abs_error=" + std::to_string(error));
     }
     result.max_abs_error = std::max(result.max_abs_error, error);
     squared += static_cast<double>(error) * error;
   }
   result.rmse = std::sqrt(squared / actual.size());
+  return result;
+}
+
+struct DenoisingQuality {
+  double noisy_psnr_db;
+  double denoised_psnr_db;
+};
+
+// Measure the raw float32 RGB tensors (peak=1), before display clipping.
+inline DenoisingQuality CompareDenoising(const std::vector<float>& noisy,
+                                         const std::vector<float>& denoised,
+                                         const std::vector<float>& clean) {
+  if (clean.empty() || noisy.size() != clean.size() || denoised.size() != clean.size())
+    throw std::runtime_error("Denoising reference shape mismatch");
+  double noisy_squared = 0, denoised_squared = 0;
+  for (size_t i = 0; i < clean.size(); ++i) {
+    if (!std::isfinite(noisy[i]) || !std::isfinite(denoised[i]) || !std::isfinite(clean[i]))
+      throw std::runtime_error("Non-finite denoising tensor");
+    const double noise = static_cast<double>(noisy[i]) - clean[i];
+    const double error = static_cast<double>(denoised[i]) - clean[i];
+    noisy_squared += noise * noise;
+    denoised_squared += error * error;
+  }
+  // Cap perfect reconstruction at 120 dB so reports remain valid JSON.
+  const DenoisingQuality result{-10 * std::log10(std::max(noisy_squared / clean.size(), 1e-12)),
+                                -10 * std::log10(std::max(denoised_squared / clean.size(), 1e-12))};
+  if (result.denoised_psnr_db < result.noisy_psnr_db + 3)
+    throw std::runtime_error("Denoising must improve PSNR by at least 3 dB");
   return result;
 }
 
@@ -121,8 +151,16 @@ inline void RunBenchmark(vkai::Engine& engine, const char* reference_path, int w
   std::sort(sorted.begin(), sorted.end());
   const double median = (sorted[(sorted.size() - 1) / 2] + sorted[sorted.size() / 2]) / 2;
   std::cout << std::setprecision(9) << "{\"device\":" << std::quoted(result.device_name)
-            << ",\"timer\":\"GPU timestamps, complete graph\",\"warmup_runs\":" << warmup
-            << ",\"measured_runs\":" << runs
+            << ",\"input_shape\":[";
+  const auto& shape = engine.GetInputTensor()->GetShape();
+  for (size_t i = 0; i < shape.size(); ++i) {
+    if (i) std::cout << ',';
+    std::cout << shape[i];
+  }
+  std::cout << "],\"dtype\":\"float32\""
+            << ",\"timer\":\"GPU timestamps, complete graph, summed submissions\""
+            << ",\"submissions_per_run\":" << result.submissions_per_run
+            << ",\"warmup_runs\":" << warmup << ",\"measured_runs\":" << runs
             << ",\"timestamp_valid_bits\":" << result.timestamp_valid_bits
             << ",\"timestamp_period_ns\":" << result.timestamp_period_ns
             << ",\"mean_ms\":" << std::accumulate(sorted.begin(), sorted.end(), 0.0) / sorted.size()
