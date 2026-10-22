@@ -32,8 +32,8 @@ def main():
     parser.add_argument(
         "--models",
         nargs="+",
-        choices=["resnet18", "unet", "mobilenet_v2", "yolov8n", "dncnn"],
-        default=["mobilenet_v2", "yolov8n", "dncnn"],
+        choices=["resnet18", "unet", "mobilenet_v2", "yolov8n", "dncnn", "lraspp"],
+        default=["mobilenet_v2", "yolov8n", "dncnn", "lraspp"],
     )
     parser.add_argument(
         "--runner-dir", type=Path, help="Directory containing the per-network C++ tests"

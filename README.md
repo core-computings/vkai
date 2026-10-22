@@ -47,6 +47,7 @@ pretrained weights and sample images, then export ONNX models, inputs, and refer
 .venv/bin/python python/models/export_mobilenet_v2.py
 .venv/bin/python python/models/export_yolov8n.py
 .venv/bin/python python/models/export_dncnn.py
+.venv/bin/python python/models/export_lraspp.py
 ```
 
 Files are cached in `python/models/artifacts/` and shared by both platforms.
@@ -59,8 +60,9 @@ validates its own outputs. Python prepares models and optionally renders images;
 model execution and comparison run entirely in C++.
 
 Each network has its own C++ entry point directly in `tasks/`:
-`ResNet18Test.cpp`, `UNetTest.cpp`, `MobileNetV2Test.cpp`, `YOLOv8nTest.cpp`, and `DnCNNTest.cpp`.
-They build as `vkai_{resnet18,unet,mobilenet_v2,yolov8n,dncnn}_test`; each executable
+`ResNet18Test.cpp`, `UNetTest.cpp`, `MobileNetV2Test.cpp`, `YOLOv8nTest.cpp`, `DnCNNTest.cpp`,
+and `LRASPPTest.cpp`.
+They build as `vkai_{resnet18,unet,mobilenet_v2,yolov8n,dncnn,lraspp}_test`; each executable
 also supports GPU timing with `--benchmark`.
 
 The YOLOv8n C++ test also draws boxes, COCO class names, and confidence scores on
@@ -72,6 +74,13 @@ at least 3 dB against the clean image. Its C++ test saves `<platform>_noisy.png`
 `<platform>_denoised.png`, and `<platform>_comparison.png` in
 `python/models/artifacts/dncnn/`. The comparison shows noisy input, Vulkan output,
 and clean reference. Android renders these images on the device and pulls them back.
+
+LR-ASPP uses pretrained MobileNetV3-Large for 21-class semantic segmentation at
+320×320. It validates raw logits and an independently exported PyTorch argmax mask,
+then saves class-ID, colored mask, overlay, and comparison PNGs in
+`python/models/artifacts/lraspp/`. The comparison shows input, PyTorch mask,
+VKAI mask, and VKAI overlay with a class legend. Android renders and returns the
+same images. See the [LR-ASPP results and reproduction steps](python/models/LRASPP_REPORT.md).
 
 ```bash
 # macOS
@@ -85,8 +94,8 @@ adb devices
 ./scripts/build.sh -t android -r models
 ```
 
-Default: `-t macos -r unittests`. `models` validates all five networks and benchmarks
-MobileNetV2 / YOLOv8n / DnCNN. Both platforms pass all 99 unit tests and all five model tests.
+Default: `-t macos -r unittests`. `models` validates all six networks and benchmarks
+MobileNetV2 / YOLOv8n / DnCNN / LR-ASPP. Both platforms pass all 110 unit tests and all six model tests.
 See [model instructions](python/models/README.md) for output files and individual runs.
 
 For compilation only (as in CI), use `./scripts/build.sh -t macos -r 0` or
@@ -107,3 +116,9 @@ GPU times are the mean of 30 runs after 5 warm-up runs.
 | MobileNetV2 | 224×224 | 3,504,872  | 26.28               | 7.46           | 36.43            |
 | YOLOv8n     | 640×640 | 3,151,904  | 49.27               | 46.85          | 358.86           |
 | DnCNN       | 256×256 | 668,227    | 36.05               | 393.90         | 3143.81          |
+
+LR-ASPP / MobileNetV3-Large was added and measured on 2026-10-22: 320×320 input,
+3,221,538 parameters, mean GPU time **12.56 ms on macOS / 87.58 ms on Android**
+(5 warm-up runs, 30 measured runs). Both platforms match the PyTorch argmax mask
+exactly. See the [LR-ASPP report](python/models/LRASPP_REPORT.md) for numerical
+errors, test coverage, and visualization outputs.

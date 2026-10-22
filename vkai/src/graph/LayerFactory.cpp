@@ -8,10 +8,12 @@
 
 #include "layers/AdaptiveAvgPool2D.h"
 #include "layers/BatchNorm2D.h"
+#include "layers/BilinearResize2D.h"
 #include "layers/BinaryElementwise.h"
 #include "layers/Clip.h"
 #include "layers/Conv2D.h"
 #include "layers/ConvTranspose2D.h"
+#include "layers/HardSigmoid.h"
 #include "layers/Linear.h"
 #include "layers/MaxPool2D.h"
 #include "layers/NearestResize2D.h"
@@ -148,6 +150,12 @@ std::unique_ptr<Layer> CreateLayer(core::vulkan::VulkanContext* context, const O
     case OpType::Sigmoid:
       Require(s == out, op, "Sigmoid shape mismatch");
       layer = std::make_unique<Sigmoid>(context, TensorElementCount(*input));
+      break;
+    case OpType::HardSigmoid:
+      Require(s == out, op, "HardSigmoid shape mismatch");
+      layer =
+          std::make_unique<HardSigmoid>(context, TensorElementCount(*input),
+                                        Attribute(op, "alpha", .2F), Attribute(op, "beta", .5F));
       break;
     case OpType::MaxPool2D: {
       Require(s.size() == 4 && out.size() == 4, op, "MaxPool requires NCHW");
@@ -317,14 +325,23 @@ std::unique_ptr<Layer> CreateLayer(core::vulkan::VulkanContext* context, const O
       layer = std::make_unique<TensorTransform>(context, ElementCount(s), out, strides, offset);
       break;
     }
-    case OpType::NearestResize2D: {
+    case OpType::NearestResize2D:
+    case OpType::BilinearResize2D: {
       Require(s.size() == 4 && out.size() == 4 && s[0] == out[0] && s[1] == out[1], op,
               "Resize requires matching NCHW batch/channels");
-      Require(Attribute(op, "mode", std::string("nearest")) == "nearest" &&
-                  Attribute(op, "coordinate_transformation_mode", std::string("half_pixel")) ==
-                      "asymmetric" &&
-                  Attribute(op, "nearest_mode", std::string("round_prefer_floor")) == "floor",
-              op, "Resize supports nearest/asymmetric/floor");
+      const bool linear = op.Type() == OpType::BilinearResize2D;
+      if (linear) {
+        Require(Attribute(op, "mode", std::string("nearest")) == "linear" &&
+                    Attribute(op, "coordinate_transformation_mode", std::string("half_pixel")) ==
+                        "half_pixel",
+                op, "Linear Resize supports half_pixel coordinates only");
+      } else {
+        Require(Attribute(op, "mode", std::string("nearest")) == "nearest" &&
+                    Attribute(op, "coordinate_transformation_mode", std::string("half_pixel")) ==
+                        "asymmetric" &&
+                    Attribute(op, "nearest_mode", std::string("round_prefer_floor")) == "floor",
+                op, "Resize supports nearest/asymmetric/floor");
+      }
       Require(Attribute<int64_t>(op, "exclude_outside", 0) == 0, op,
               "Resize exclude_outside unsupported");
       if (op.HasInput("scales") && !op.GetInput("scales")->Data().empty()) {
@@ -342,7 +359,10 @@ std::unique_ptr<Layer> CreateLayer(core::vulkan::VulkanContext* context, const O
         const auto& sizes = op.GetInput("sizes")->Int64Data();
         Require(sizes == std::vector<int64_t>(out.begin(), out.end()), op, "Resize sizes mismatch");
       }
-      layer = std::make_unique<NearestResize2D>(context, s[1], s[2], s[3], out[2], out[3], s[0]);
+      if (linear)
+        layer = std::make_unique<BilinearResize2D>(context, s[1], s[2], s[3], out[2], out[3], s[0]);
+      else
+        layer = std::make_unique<NearestResize2D>(context, s[1], s[2], s[3], out[2], out[3], s[0]);
       break;
     }
     case OpType::Softmax: {
