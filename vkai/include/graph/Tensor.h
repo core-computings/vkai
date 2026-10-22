@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -28,10 +29,14 @@ class Tensor {
 
   const std::vector<float>& Data() const;
 
-  // Takes ownership of a buffer allocated by the inference executor.
+  // Owns or shares storage assigned by the inference executor. Size is capacity;
+  // ByteSize() is the tensor's logical payload, which may be smaller.
   void SetBuffer(core::vulkan::VulkanBuffer&& buffer);
+  void SetBuffer(std::shared_ptr<core::vulkan::VulkanBuffer> buffer);
 
-  bool HasBuffer() const { return buffer_.has_value(); }
+  bool HasBuffer() const { return buffer_ != nullptr; }
+
+  VkDeviceSize ByteSize() const;
 
   core::vulkan::VulkanBuffer& Buffer();
 
@@ -42,7 +47,7 @@ class Tensor {
   std::vector<int64_t> shape_;
   std::optional<std::vector<float>> data_;
   std::optional<std::vector<int64_t>> integer_data_;
-  std::optional<core::vulkan::VulkanBuffer> buffer_;
+  std::shared_ptr<core::vulkan::VulkanBuffer> buffer_;
 };
 
 }  // namespace vkai

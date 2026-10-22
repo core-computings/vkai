@@ -1,0 +1,283 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1600" viewBox="0 100 2000 1600" role="img" aria-labelledby="diagram-title diagram-description">
+<title id="diagram-title">Engine construction around one network</title>
+<desc id="diagram-description">Eight construction steps surround a Conv, ReLU, Add, ReLU, Reshape network. Cubes represent logical tensors; chips represent GPU buffers. Tensor and buffer numbers are separate identifiers. The input uses Buffer 1. Tensor 1 and Tensor 3 reuse Buffer 2 at different times. Tensor 2 uses Buffer 3. Tensor 4 and the output share Buffer 4 as views, without a GPU copy. The constant tensor used by Add is uploaded to Buffer 5. Weight tensors remain CPU graph data and are uploaded to private layer buffers; the shape tensor is CPU-only. Shape notation is symbolic: [b, h, w, c]. Buffer IDs are illustrative. The constructor loads ONNX, infers shapes and builds a Graph, validates and topologically sorts it, initializes Vulkan, plans storage, allocates and binds buffers, uploads graph constants, builds layers and pipelines, and prepares the execution order. Only after construction does inference upload input, record commands and barriers, submit and wait, and read output.</desc>
+<defs>
+ <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M1 1 L8 5 L1 9" fill="none" stroke="context-stroke" stroke-width="1.8" stroke-linejoin="round"/></marker>
+ <!-- Entity marks: a data cube for a tensor, a memory chip for GPU storage. -->
+ <symbol id="tensor-cube" viewBox="0 0 36 36">
+  <polygon points="18,2 33,10 18,18 3,10" fill="#dceaff"/>
+  <polygon points="3,10 18,18 18,34 3,26" fill="#c0d8f6"/>
+  <polygon points="18,18 33,10 33,26 18,34" fill="#91b7e3"/>
+  <path d="M18 2 L33 10 V26 L18 34 L3 26 V10 Z M3 10 L18 18 L33 10 M18 18 V34" fill="none" stroke="#285fa8" stroke-width="1.7" stroke-linejoin="round"/>
+ </symbol>
+ <symbol id="gpu-chip" viewBox="0 0 36 36">
+  <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+   <path d="M11 2 V7 M18 2 V7 M25 2 V7 M11 29 V34 M18 29 V34 M25 29 V34 M2 11 H7 M2 18 H7 M2 25 H7 M29 11 H34 M29 18 H34 M29 25 H34"/>
+   <rect x="7" y="7" width="22" height="22" rx="3" fill="white"/>
+   <rect x="12" y="12" width="12" height="12" rx="1" fill="currentColor" fill-opacity="0.16"/>
+  </g>
+ </symbol>
+ <style>
+  text { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; fill:#172b43; }
+  .title { font-size:38px; font-weight:600; }
+  .subtitle { font-size:23px; fill:#52667d; }
+  .step-title { font-size:27px; font-weight:600; }
+  .body { font-size:22px; }
+  .small { font-size:19px; fill:#52667d; }
+  .fn { font-family:Menlo, Consolas, monospace; font-size:17px; fill:#52667d; }
+  .number { font-size:20px; font-weight:600; fill:white; text-anchor:middle; }
+  .op { font-size:25px; font-weight:500; text-anchor:middle; }
+  .layer { font-size:18px; fill:#7754a0; text-anchor:middle; }
+  .tensor { font-size:21px; font-weight:500; }
+  .buffer { font-size:20px; font-weight:500; }
+  .section { font-size:25px; font-weight:600; }
+  .table-label { font-size:17px; text-anchor:middle; fill:#52667d; }
+ </style>
+</defs>
+<rect width="2000" height="1700" fill="white"/>
+
+<use href="#tensor-cube" x="48" y="119" width="32" height="32" style="color:#127c75" aria-hidden="true"/>
+<text x="94" y="143" class="body">Tensor: shape + logical data</text>
+<use href="#gpu-chip" x="480" y="119" width="32" height="32" style="color:#127c75" aria-hidden="true"/>
+<text x="526" y="143" class="body">Buffer: GPU memory</text>
+<text x="1100" y="143" class="body">Same Buffer ID = same GPU allocation.</text>
+<path d="M48 165 H1952" fill="none" stroke="#dce4ec" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M498 285 H535 V190 H560" fill="none" stroke="#285fa8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 6" marker-end="url(#arrow)"/>
+<path d="M498 525 H555 V367 H580" fill="none" stroke="#285fa8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 6" marker-end="url(#arrow)"/>
+<path d="M498 765 H525 V1037 M525 1053 V1326 H599" fill="none" stroke="#127c75" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 6" marker-end="url(#arrow)"/>
+<path d="M498 1045 H560 V640 H580" fill="none" stroke="#a65a14" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 6" marker-end="url(#arrow)"/>
+<path d="M1502 290 H1450 V532 H1410" fill="none" stroke="#127c75" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 6" marker-end="url(#arrow)"/>
+<path d="M1502 538 H1470 V740 H1410" fill="none" stroke="#127c75" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 6" marker-end="url(#arrow)"/>
+<path d="M1502 785 H1450 V920 H881" fill="none" stroke="#7754a0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 6" marker-end="url(#arrow)"/>
+<path d="M1502 1067 H1460 V1416 H1420" fill="none" stroke="#285fa8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 6" marker-end="url(#arrow)"/>
+<circle cx="580" cy="190" r="17" fill="#285fa8" stroke="white" stroke-width="3"/>
+<text x="580" y="197" class="number">1</text>
+<text x="610" y="199" class="section">A single graph</text>
+<text x="620" y="229" class="small">Shape: [b, h, w, c]</text>
+<text x="1110" y="229" class="small">Parameters + GPU storage</text>
+<path d="M730 300 V325" fill="none" stroke="#61768c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M730 407 V428" fill="none" stroke="#61768c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M730 486 V511" fill="none" stroke="#61768c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M730 587 V611" fill="none" stroke="#61768c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M730 669 V694" fill="none" stroke="#61768c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M730 770 V793" fill="none" stroke="#61768c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M730 851 V876" fill="none" stroke="#61768c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M730 952 V976" fill="none" stroke="#61768c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M730 1034 V1059" fill="none" stroke="#61768c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M730 1135 V1159" fill="none" stroke="#61768c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="620" y="245" width="220" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="633" y="254" width="32" height="32" style="color:#127c75" aria-hidden="true"/>
+<text x="675" y="278" class="tensor" data-bounds="672,248,158,43">Input tensor</text>
+<path d="M842 270 H881" fill="none" stroke="#9aabba" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 4"/>
+<rect x="884" y="245" width="166" height="50" rx="9" fill="#edf8f6" stroke="#acd4cc" stroke-width="1.4" />
+<use href="#gpu-chip" x="894" y="255" width="30" height="30" style="color:#127c75" aria-hidden="true"/>
+<text x="934" y="277" class="buffer" style="fill:#127c75" data-bounds="931,250,110,38">Buffer 1</text>
+<rect x="620" y="330" width="220" height="74" rx="12" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<text x="730" y="360" class="op">Conv</text>
+<text x="730" y="389" class="layer">Layer + pipeline</text>
+<rect x="620" y="433" width="220" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="633" y="442" width="32" height="32" style="color:#127c75" aria-hidden="true"/>
+<text x="675" y="466" class="tensor" data-bounds="672,436,158,43">Tensor 1</text>
+<path d="M842 458 H881" fill="none" stroke="#9aabba" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 4"/>
+<rect x="884" y="433" width="166" height="50" rx="9" fill="#fff3dd" stroke="#dcb17c" stroke-width="1.4" />
+<use href="#gpu-chip" x="894" y="443" width="30" height="30" style="color:#a65a14" aria-hidden="true"/>
+<text x="934" y="465" class="buffer" style="fill:#a65a14" data-bounds="931,438,110,38">Buffer 2</text>
+<rect x="620" y="516" width="220" height="68" rx="12" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<text x="730" y="546" class="op">ReLU 1</text>
+<text x="730" y="575" class="layer">Layer + pipeline</text>
+<rect x="620" y="616" width="220" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="633" y="625" width="32" height="32" style="color:#127c75" aria-hidden="true"/>
+<text x="675" y="649" class="tensor" data-bounds="672,619,158,43">Tensor 2</text>
+<path d="M842 641 H881" fill="none" stroke="#9aabba" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 4"/>
+<rect x="884" y="616" width="166" height="50" rx="9" fill="#edf8f6" stroke="#acd4cc" stroke-width="1.4" />
+<use href="#gpu-chip" x="894" y="626" width="30" height="30" style="color:#127c75" aria-hidden="true"/>
+<text x="934" y="648" class="buffer" style="fill:#127c75" data-bounds="931,621,110,38">Buffer 3</text>
+<rect x="620" y="699" width="220" height="68" rx="12" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<text x="730" y="729" class="op">Add</text>
+<text x="730" y="758" class="layer">Layer + pipeline</text>
+<rect x="620" y="798" width="220" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="633" y="807" width="32" height="32" style="color:#127c75" aria-hidden="true"/>
+<text x="675" y="831" class="tensor" data-bounds="672,801,158,43">Tensor 3</text>
+<path d="M842 823 H881" fill="none" stroke="#9aabba" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 4"/>
+<rect x="884" y="798" width="166" height="50" rx="9" fill="#fff3dd" stroke="#dcb17c" stroke-width="1.4" />
+<use href="#gpu-chip" x="894" y="808" width="30" height="30" style="color:#a65a14" aria-hidden="true"/>
+<text x="934" y="830" class="buffer" style="fill:#a65a14" data-bounds="931,803,110,38">Buffer 2</text>
+<rect x="620" y="881" width="220" height="68" rx="12" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<text x="730" y="911" class="op">ReLU 2</text>
+<text x="730" y="940" class="layer">Layer + pipeline</text>
+<rect x="620" y="981" width="220" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="633" y="990" width="32" height="32" style="color:#127c75" aria-hidden="true"/>
+<text x="675" y="1014" class="tensor" data-bounds="672,984,158,43">Tensor 4</text>
+<path d="M842 1006 H881" fill="none" stroke="#9aabba" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 4"/>
+<rect x="884" y="981" width="166" height="50" rx="9" fill="#edf8f6" stroke="#acd4cc" stroke-width="1.4" />
+<use href="#gpu-chip" x="894" y="991" width="30" height="30" style="color:#127c75" aria-hidden="true"/>
+<text x="934" y="1013" class="buffer" style="fill:#127c75" data-bounds="931,986,110,38">Buffer 4</text>
+<rect x="620" y="1064" width="220" height="68" rx="12" fill="#f5f6f8" stroke="#ccd3dd" stroke-width="1.4" stroke-dasharray="5 4"/>
+<text x="730" y="1094" class="op">Reshape</text>
+<text x="730" y="1123" class="layer" style="fill:#738298">View · no dispatch</text>
+<rect x="620" y="1164" width="220" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="633" y="1173" width="32" height="32" style="color:#127c75" aria-hidden="true"/>
+<text x="675" y="1197" class="tensor" data-bounds="672,1167,158,43">Output tensor</text>
+<path d="M842 1189 H881" fill="none" stroke="#9aabba" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 4"/>
+<rect x="884" y="1164" width="166" height="50" rx="9" fill="#edf8f6" stroke="#acd4cc" stroke-width="1.4" />
+<use href="#gpu-chip" x="894" y="1174" width="30" height="30" style="color:#127c75" aria-hidden="true"/>
+<text x="934" y="1196" class="buffer" style="fill:#127c75" data-bounds="931,1169,110,38">Buffer 4</text>
+<circle cx="600" cy="367" r="17" fill="#285fa8" stroke="white" stroke-width="3"/>
+<text x="600" y="374" class="number">2</text>
+<rect x="1110" y="267" width="300" height="64" rx="12" fill="#f7f9fc" stroke="#d8e2eb" stroke-width="1.4" />
+<use href="#tensor-cube" x="1124" y="280" width="33" height="33" style="color:#127c75" aria-hidden="true"/>
+<text x="1170" y="293" class="body">Weight tensors</text>
+<text x="1170" y="321" class="small">CPU data</text>
+<text x="1124" y="355" class="fn" style="fill:#7754a0">MapWeights()</text>
+<path d="M1380 335 V363" fill="none" stroke="#7754a0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<circle cx="1320" cy="351" r="15" fill="#7754a0" stroke="white" stroke-width="3"/>
+<text x="1320" y="358" class="number">7</text>
+<rect x="1110" y="367" width="300" height="64" rx="12" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<use href="#gpu-chip" x="1124" y="381" width="33" height="33" style="color:#7754a0" aria-hidden="true"/>
+<text x="1170" y="393" class="body">Layer weights</text>
+<text x="1170" y="421" class="small">Private GPU buffers</text>
+<path d="M1110 398 H1080 V367 H840" fill="none" stroke="#7754a0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M616 458 H600 V823 H616" fill="none" stroke="#a65a14" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="600" cy="640" r="17" fill="#a65a14" stroke="white" stroke-width="3"/>
+<text x="600" y="647" class="number">4</text>
+<rect x="1110" y="496" width="300" height="105" rx="12" fill="#fff3dd" stroke="#dcb17c" stroke-width="1.4" />
+<use href="#gpu-chip" x="1124" y="512" width="34" height="34" style="color:#a65a14" aria-hidden="true"/>
+<text x="1170" y="538" class="body" style="fill:#a65a14" data-bounds="1167,509,199,39">Buffer 2 · reuse</text>
+<text x="1128" y="576" class="body" data-bounds="1125,548,265,39">Tensor 1, then Tensor 3</text>
+<circle cx="1386" cy="532" r="17" fill="#127c75" stroke="white" stroke-width="3"/>
+<text x="1386" y="539" class="number">5</text>
+<path d="M1110 532 H1080 V458 H1050" fill="none" stroke="#a65a14" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1110" y="650" width="300" height="48" rx="12" fill="#f7f9fc" stroke="#d8e2eb" stroke-width="1.4" />
+<use href="#tensor-cube" x="1124" y="658" width="30" height="30" style="color:#127c75" aria-hidden="true"/>
+<text x="1170" y="681" class="body">Constant tensor</text>
+<path d="M1260 701 V713" fill="none" stroke="#127c75" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1110" y="717" width="300" height="76" rx="12" fill="#edf8f6" stroke="#acd4cc" stroke-width="1.4" />
+<use href="#gpu-chip" x="1124" y="730" width="32" height="32" style="color:#127c75" aria-hidden="true"/>
+<text x="1170" y="747" class="body" style="fill:#127c75">Buffer 5</text>
+<text x="1170" y="780" class="small">Uploaded once</text>
+<circle cx="1386" cy="740" r="17" fill="#127c75" stroke="white" stroke-width="3"/>
+<text x="1386" y="747" class="number">6</text>
+<path d="M1110 750 H1080 V733 H840" fill="none" stroke="#127c75" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<circle cx="861" cy="920" r="17" fill="#7754a0" stroke="white" stroke-width="3"/>
+<text x="861" y="927" class="number">7</text>
+<rect x="1110" y="1060" width="300" height="98" rx="12" fill="#f7f9fc" stroke="#d8e2eb" stroke-width="1.4" />
+<use href="#tensor-cube" x="1124" y="1077" width="33" height="33" style="color:#127c75" aria-hidden="true"/>
+<text x="1170" y="1094" class="body">Shape tensor</text>
+<text x="1170" y="1130" class="small">CPU only</text>
+<path d="M1110 1098 H840" fill="none" stroke="#738298" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="4 5" marker-end="url(#arrow)"/>
+<path d="M1050 1189 H1080 V1218 H1104" fill="none" stroke="#127c75" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="1110" y="1225" class="small">Same storage · no copy</text>
+<g id="step-1" aria-label="Step 1: Load ONNX">
+<rect x="48" y="195" width="450" height="184" rx="14" fill="white" stroke="#dde4eb" stroke-width="1.4" />
+<circle cx="75" cy="229" r="17" fill="#285fa8" stroke="white" stroke-width="3"/>
+<text x="75" y="236" class="number">1</text>
+<text x="102" y="238" class="step-title" data-bounds="100,205,390,46">Load ONNX</text>
+<text x="72" y="277" class="fn" data-bounds="68,252,410,32">BuildGraphFromONNX()</text>
+<text x="72" y="317" class="body" data-bounds="68,292,410,84">Parse model + infer shapes.</text>
+<text x="72" y="349" class="body" data-bounds="68,292,410,84">Create operations and tensors.</text>
+</g>
+<g id="step-2" aria-label="Step 2: Sort the graph">
+<rect x="48" y="435" width="450" height="184" rx="14" fill="white" stroke="#dde4eb" stroke-width="1.4" />
+<circle cx="75" cy="469" r="17" fill="#285fa8" stroke="white" stroke-width="3"/>
+<text x="75" y="476" class="number">2</text>
+<text x="102" y="478" class="step-title" data-bounds="100,445,390,46">Sort the graph</text>
+<text x="72" y="517" class="fn" data-bounds="68,492,410,32">TopologicalSort()</text>
+<text x="72" y="557" class="body" data-bounds="68,532,410,84">Producer before consumer.</text>
+<text x="72" y="589" class="body" data-bounds="68,532,410,84">Validate dependencies.</text>
+</g>
+<g id="step-3" aria-label="Step 3: Init Vulkan">
+<rect x="48" y="675" width="450" height="184" rx="14" fill="white" stroke="#dde4eb" stroke-width="1.4" />
+<circle cx="75" cy="709" r="17" fill="#127c75" stroke="white" stroke-width="3"/>
+<text x="75" y="716" class="number">3</text>
+<text x="102" y="718" class="step-title" data-bounds="100,685,390,46">Init Vulkan</text>
+<text x="72" y="757" class="fn" data-bounds="68,732,410,32">VulkanContext → Init()</text>
+<text x="72" y="797" class="body" data-bounds="68,772,410,84">Create device + compute queue.</text>
+<text x="72" y="829" class="body" data-bounds="68,772,410,84">Shared context for GPU resources.</text>
+</g>
+<g id="step-4" aria-label="Step 4: Plan memory">
+<rect x="48" y="915" width="450" height="338" rx="14" fill="white" stroke="#dde4eb" stroke-width="1.4" />
+<circle cx="75" cy="949" r="17" fill="#a65a14" stroke="white" stroke-width="3"/>
+<text x="75" y="956" class="number">4</text>
+<text x="102" y="958" class="step-title" data-bounds="100,925,390,46">Plan memory</text>
+<text x="72" y="997" class="fn" data-bounds="68,972,410,32">BuildMemoryPlan()</text>
+<text x="72" y="1037" class="body" data-bounds="68,1012,410,238">Reuse storage after the last read.</text>
+<text x="72" y="1069" class="body" data-bounds="68,1012,410,238">Merge views; skip CPU-only data.</text>
+</g>
+<text x="185" y="1110" class="table-label">Conv</text>
+<path d="M185 1122 V1201" fill="none" stroke="#e4e9f0" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="261" y="1110" class="table-label">ReLU 1</text>
+<path d="M261 1122 V1201" fill="none" stroke="#e4e9f0" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="337" y="1110" class="table-label">Add</text>
+<path d="M337 1122 V1201" fill="none" stroke="#e4e9f0" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="413" y="1110" class="table-label">ReLU 2</text>
+<path d="M413 1122 V1201" fill="none" stroke="#e4e9f0" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="72" y="1151" class="small">Tensor 1</text>
+<path d="M185 1144 H261" fill="none" stroke="#a65a14" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="185" cy="1144" r="5" fill="#a65a14"/>
+<circle cx="261" cy="1144" r="5" fill="#a65a14"/>
+<text x="72" y="1195" class="small">Tensor 3</text>
+<path d="M337 1188 H413" fill="none" stroke="#a65a14" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="337" cy="1188" r="5" fill="#a65a14"/>
+<circle cx="413" cy="1188" r="5" fill="#a65a14"/>
+<text x="72" y="1230" class="small">No GPU allocation yet.</text>
+<g id="step-5" aria-label="Step 5: Allocate GPU buffers">
+<rect x="1502" y="195" width="450" height="184" rx="14" fill="white" stroke="#dde4eb" stroke-width="1.4" />
+<circle cx="1529" cy="229" r="17" fill="#127c75" stroke="white" stroke-width="3"/>
+<text x="1529" y="236" class="number">5</text>
+<text x="1556" y="238" class="step-title" data-bounds="1554,205,390,46">Allocate GPU buffers</text>
+<text x="1526" y="277" class="fn" data-bounds="1522,252,410,32">AllocateVulkanBuffers()</text>
+<text x="1526" y="317" class="body" data-bounds="1522,292,410,84">One GPU buffer per planned slot.</text>
+<text x="1526" y="349" class="body" data-bounds="1522,292,410,84">Bind tensors to their storage.</text>
+</g>
+<g id="step-6" aria-label="Step 6: Upload constants">
+<rect x="1502" y="435" width="450" height="184" rx="14" fill="white" stroke="#dde4eb" stroke-width="1.4" />
+<circle cx="1529" cy="469" r="17" fill="#127c75" stroke="white" stroke-width="3"/>
+<text x="1529" y="476" class="number">6</text>
+<text x="1556" y="478" class="step-title" data-bounds="1554,445,390,46">Upload constants</text>
+<text x="1526" y="517" class="fn" data-bounds="1522,492,410,32">UploadConstants()</text>
+<text x="1526" y="557" class="body" data-bounds="1522,532,410,84">Constant tensor → GPU buffer.</text>
+<text x="1526" y="589" class="body" data-bounds="1522,532,410,84">Add reads Buffer 5.</text>
+</g>
+<g id="step-7" aria-label="Step 7: Build layers">
+<rect x="1502" y="675" width="450" height="184" rx="14" fill="white" stroke="#dde4eb" stroke-width="1.4" />
+<circle cx="1529" cy="709" r="17" fill="#7754a0" stroke="white" stroke-width="3"/>
+<text x="1529" y="716" class="number">7</text>
+<text x="1556" y="718" class="step-title" data-bounds="1554,685,390,46">Build layers</text>
+<text x="1526" y="757" class="fn" data-bounds="1522,732,410,32">CreatePipeline() → CreateLayer()</text>
+<text x="1526" y="797" class="body" data-bounds="1522,772,410,84">Upload private layer weights.</text>
+<text x="1526" y="829" class="body" data-bounds="1522,772,410,84">Init descriptors + pipelines.</text>
+</g>
+<g id="step-8" aria-label="Step 8: Prepare execution">
+<rect x="1502" y="947" width="450" height="184" rx="14" fill="white" stroke="#dde4eb" stroke-width="1.4" />
+<circle cx="1529" cy="981" r="17" fill="#285fa8" stroke="white" stroke-width="3"/>
+<text x="1529" y="988" class="number">8</text>
+<text x="1556" y="990" class="step-title" data-bounds="1554,957,390,46">Prepare execution</text>
+<text x="1526" y="1029" class="fn" data-bounds="1522,1004,410,32">execution_order_</text>
+<text x="1526" y="1069" class="body" data-bounds="1522,1044,410,84">Run compute layers in order.</text>
+<text x="1526" y="1101" class="body" data-bounds="1522,1044,410,84">Skip Constant and view ops.</text>
+</g>
+<rect x="600" y="1290" width="820" height="72" rx="12" fill="#edf8f6" stroke="#b5d9d1" stroke-width="1.4" />
+<circle cx="620" cy="1326" r="17" fill="#127c75" stroke="white" stroke-width="3"/>
+<text x="620" y="1333" class="number">3</text>
+<text x="650" y="1323" class="body">VulkanContext: shared GPU environment</text>
+<text x="650" y="1350" class="small">Device · compute queue · resource creation</text>
+<rect x="600" y="1390" width="820" height="112" rx="12" fill="#f4f7fb" stroke="#cdd9e8" stroke-width="1.4" />
+<circle cx="620" cy="1418" r="17" fill="#285fa8" stroke="white" stroke-width="3"/>
+<text x="620" y="1425" class="number">8</text>
+<text x="648" y="1427" class="body">Execution order</text>
+<rect x="654" y="1445" width="145" height="39" rx="8" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<text x="726.5" y="1472" class="body" text-anchor="middle">Conv</text>
+<path d="M804 1464 H833" fill="none" stroke="#61768c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="841" y="1445" width="145" height="39" rx="8" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<text x="913.5" y="1472" class="body" text-anchor="middle">ReLU 1</text>
+<path d="M991 1464 H1020" fill="none" stroke="#61768c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1028" y="1445" width="145" height="39" rx="8" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<text x="1100.5" y="1472" class="body" text-anchor="middle">Add</text>
+<path d="M1178 1464 H1207" fill="none" stroke="#61768c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1215" y="1445" width="145" height="39" rx="8" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<text x="1287.5" y="1472" class="body" text-anchor="middle">ReLU 2</text>
+<text x="600" y="1536" class="small">Ready to run. No inference commands recorded yet.</text>
+<path d="M48 1571 H1952" fill="none" stroke="#dce4ec" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="48" y="1611" class="body">After construction: Set input → Upload → Record + barriers → Submit / wait → Read output</text>
+<text x="48" y="1654" class="small">Solid arrows: data flow. Dotted lines: annotations or storage bindings. Buffer IDs are schematic.</text>
+</svg>

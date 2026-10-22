@@ -1,0 +1,243 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1880" viewBox="0 0 1800 1880" role="img" aria-labelledby="memory-title memory-description">
+<title id="memory-title">How the memory planner reuses GPU buffers</title>
+<desc id="memory-description">The same example network is shown as in the Engine construction diagram, with symbolic shape [b, h, w, c]. Cube marks are tensors and chip marks are GPU buffers. The planner first merges view aliases and classifies GPU-required storage. Temporary Tensor 1 is produced by Conv at operation 0 and last read by ReLU 1 at operation 1. Tensor 2 lives from ReLU 1 at 1 through Add at 2. Tensor 3 lives from Add at 2 through ReLU 2 at 3. Tensor 1 and Tensor 3 may share Buffer 2 because 1 is strictly less than 2, provided the capacity fits. Tensor 2 and Tensor 3 cannot share because Add reads Tensor 2 while writing Tensor 3: 2 is not less than 2. Process storage groups in order of first write, choosing the smallest nonpersistent slot whose previous last use is strictly before the next first write and whose capacity is sufficient, or create a new slot if none fits. The packed timeline shows Tensor 1 and Tensor 3 in Buffer 2 and Tensor 2 in Buffer 3. A branch extends lifetime to the latest consumer. Reshape aliases merge into one root and a lifetime covering all consumers; Tensor 4 and output share Buffer 4. Input, output alias groups, and GPU constants reserve persistent slots. Weights used only to build layers and CPU-only shape parameters receive no graph slot. MemoryPlan contains slots, tensor_slots, and constants, and creates no Vulkan objects. AllocateVulkanBuffers subsequently creates one buffer per slot and binds tensors using shared ownership. Inference overwrites reused storage after the last read, with command barriers and no graph-buffer allocation or freeing per operation. Buffer numbers are illustrative and lifetimes are logical operation positions rather than wall-clock time.</desc>
+<defs>
+<marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M1 1 L8 5 L1 9" fill="none" stroke="context-stroke" stroke-width="1.8" stroke-linejoin="round"/></marker>
+<symbol id="tensor-cube" viewBox="0 0 36 36">
+  <polygon points="18,2 33,10 18,18 3,10" fill="#dceaff"/>
+  <polygon points="3,10 18,18 18,34 3,26" fill="#c0d8f6"/>
+  <polygon points="18,18 33,10 33,26 18,34" fill="#91b7e3"/>
+  <path d="M18 2 L33 10 V26 L18 34 L3 26 V10 Z M3 10 L18 18 L33 10 M18 18 V34" fill="none" stroke="#285fa8" stroke-width="1.7" stroke-linejoin="round"/>
+ </symbol>
+<symbol id="gpu-chip" viewBox="0 0 36 36">
+  <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+   <path d="M11 2 V7 M18 2 V7 M25 2 V7 M11 29 V34 M18 29 V34 M25 29 V34 M2 11 H7 M2 18 H7 M2 25 H7 M29 11 H34 M29 18 H34 M29 25 H34"/>
+   <rect x="7" y="7" width="22" height="22" rx="3" fill="white"/>
+   <rect x="12" y="12" width="12" height="12" rx="1" fill="currentColor" fill-opacity="0.16"/>
+  </g>
+ </symbol>
+<style>
+ text { font-family:-apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; fill:#172b43; }
+ .section { font-size:28px; font-weight:600; }
+ .body { font-size:23px; }
+ .small { font-size:20px; fill:#52667d; }
+ .tiny { font-size:18px; fill:#52667d; }
+ .code { font-family:Menlo, Consolas, monospace; font-size:20px; }
+ .node { font-size:20px; font-weight:500; }
+ .number { font-size:20px; font-weight:600; fill:white; text-anchor:middle; }
+ .op { font-size:22px; font-weight:500; text-anchor:middle; }
+ .axis { font-size:21px; text-anchor:middle; fill:#52667d; }
+ .interval { font-size:21px; text-anchor:middle; }
+</style>
+</defs>
+<rect width="1800" height="1880" fill="white"/>
+
+<use href="#tensor-cube" x="48" y="20" width="32" height="32" style="color:#127c75" aria-hidden="true"/>
+<text x="94" y="46" class="body">Tensor</text>
+<use href="#gpu-chip" x="255" y="20" width="32" height="32" style="color:#127c75" aria-hidden="true"/>
+<text x="301" y="46" class="body">GPU buffer</text>
+<text x="650" y="46" class="small">Same Buffer ID = same storage</text>
+<text x="1355" y="46" class="small">Shape: [b, h, w, c]</text>
+<path d="M48 72 H1752" fill="none" stroke="#dce4ec" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="65" cy="106" r="17" fill="#285fa8"/>
+<text x="65" y="113" class="number">1</text>
+<text x="94" y="115" class="section">Identify GPU data in the graph</text>
+<rect x="202" y="149" width="130" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="212" y="160" width="28" height="28" style="color:#127c75" aria-hidden="true"/>
+<text x="248" y="182" class="node" data-bounds="245,154,80,40">Weights</text>
+<path d="M267.0 201 V219" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="4 5" marker-end="url(#arrow)"/>
+<rect x="808" y="149" width="150" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="818" y="160" width="28" height="28" style="color:#127c75" aria-hidden="true"/>
+<text x="854" y="182" class="node" data-bounds="851,154,100,40">Constant</text>
+<path d="M883.0 201 V219" fill="none" stroke="#127c75" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1434" y="149" width="130" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="1444" y="160" width="28" height="28" style="color:#127c75" aria-hidden="true"/>
+<text x="1480" y="182" class="node" data-bounds="1477,154,80,40">Shape</text>
+<path d="M1499.0 201 V219" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="4 5" marker-end="url(#arrow)"/>
+<rect x="48" y="229" width="130" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="58" y="240" width="28" height="28" style="color:#127c75" aria-hidden="true"/>
+<text x="94" y="262" class="node" data-bounds="91,234,80,40">Input</text>
+<path d="M181 254 H197" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="202" y="223" width="130" height="62" rx="10" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<text x="267.0" y="261" class="op">Conv</text>
+<path d="M335 254 H351" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="356" y="229" width="130" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="366" y="240" width="28" height="28" style="color:#127c75" aria-hidden="true"/>
+<text x="402" y="262" class="node" data-bounds="399,234,80,40">Tensor 1</text>
+<path d="M489 254 H505" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="510" y="223" width="130" height="62" rx="10" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<text x="575.0" y="261" class="op">ReLU 1</text>
+<path d="M643 254 H659" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="664" y="229" width="130" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="674" y="240" width="28" height="28" style="color:#127c75" aria-hidden="true"/>
+<text x="710" y="262" class="node" data-bounds="707,234,80,40">Tensor 2</text>
+<path d="M797 254 H813" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="818" y="223" width="130" height="62" rx="10" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<text x="883.0" y="261" class="op">Add</text>
+<path d="M951 254 H967" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="972" y="229" width="130" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="982" y="240" width="28" height="28" style="color:#127c75" aria-hidden="true"/>
+<text x="1018" y="262" class="node" data-bounds="1015,234,80,40">Tensor 3</text>
+<path d="M1105 254 H1121" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1126" y="223" width="130" height="62" rx="10" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<text x="1191.0" y="261" class="op">ReLU 2</text>
+<path d="M1259 254 H1275" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1280" y="229" width="130" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="1290" y="240" width="28" height="28" style="color:#127c75" aria-hidden="true"/>
+<text x="1326" y="262" class="node" data-bounds="1323,234,80,40">Tensor 4</text>
+<path d="M1413 254 H1429" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1434" y="223" width="130" height="62" rx="10" fill="#f5f6f8" stroke="#ccd3dd" stroke-width="1.4" stroke-dasharray="5 4"/>
+<text x="1499.0" y="261" class="op">Reshape</text>
+<path d="M1567 254 H1583" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1588" y="229" width="130" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="1598" y="240" width="28" height="28" style="color:#127c75" aria-hidden="true"/>
+<text x="1634" y="262" class="node" data-bounds="1631,234,80,40">Output</text>
+<text x="48" y="320" class="small">Weights → layer-owned buffers. Shape → CPU only. Neither needs a graph buffer here.</text>
+<path d="M48 347 H1752" fill="none" stroke="#dce4ec" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="65" cy="381" r="17" fill="#285fa8"/>
+<text x="65" y="388" class="number">2</text>
+<text x="94" y="390" class="section">Compute lifetimes: first write → last GPU read</text>
+<text x="48" y="428" class="small">Track every consumer; interval endpoints count.</text>
+<text x="1290" y="428" class="small">Equal sizes in this example.</text>
+<text x="370" y="472" class="axis">Conv · 0</text>
+<path d="M370 486 V696" fill="none" stroke="#e0e7ef" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="610" y="472" class="axis">ReLU 1 · 1</text>
+<path d="M610 486 V696" fill="none" stroke="#e0e7ef" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="850" y="472" class="axis">Add · 2</text>
+<path d="M850 486 V696" fill="none" stroke="#e0e7ef" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="1090" y="472" class="axis">ReLU 2 · 3</text>
+<path d="M1090 486 V696" fill="none" stroke="#e0e7ef" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<use href="#tensor-cube" x="61" y="511" width="32" height="32" style="color:#127c75" aria-hidden="true"/>
+<text x="107" y="537" class="body">Tensor 1</text>
+<rect x="370" y="508" width="240" height="40" rx="8" fill="#fae5c6" stroke="none" stroke-width="1.4" />
+<path d="M370 512 V544" fill="none" stroke="#a65a14" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M610 512 V544" fill="none" stroke="#a65a14" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="490.0" y="536" class="interval">[0, 1]</text>
+<use href="#tensor-cube" x="61" y="581" width="32" height="32" style="color:#127c75" aria-hidden="true"/>
+<text x="107" y="607" class="body">Tensor 2</text>
+<rect x="610" y="578" width="240" height="40" rx="8" fill="#d8eee8" stroke="none" stroke-width="1.4" />
+<path d="M610 582 V614" fill="none" stroke="#127c75" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M850 582 V614" fill="none" stroke="#127c75" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="730.0" y="606" class="interval">[1, 2]</text>
+<use href="#tensor-cube" x="61" y="651" width="32" height="32" style="color:#127c75" aria-hidden="true"/>
+<text x="107" y="677" class="body">Tensor 3</text>
+<rect x="850" y="648" width="240" height="40" rx="8" fill="#fae5c6" stroke="none" stroke-width="1.4" />
+<path d="M850 652 V684" fill="none" stroke="#a65a14" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M1090 652 V684" fill="none" stroke="#a65a14" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="970.0" y="676" class="interval">[2, 3]</text>
+<path d="M1250 486 V696" fill="none" stroke="#dce4ec" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="1290" y="515" class="body" style="fill:#a65a14">Reuse: Tensor 1 → Tensor 3</text>
+<text x="1290" y="552" class="code">1 &lt; 2</text>
+<text x="1290" y="610" class="body" style="fill:#ad4147">Keep separate: Tensor 2 + Tensor 3</text>
+<text x="1290" y="647" class="code">2 &lt; 2 is false</text>
+<text x="1290" y="686" class="small">Add reads one while writing the other.</text>
+<text x="48" y="741" class="body">Tensor 1 is dead before Add; Tensor 2 is still needed by Add.</text>
+<path d="M48 773 H1752" fill="none" stroke="#dce4ec" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="65" cy="810" r="17" fill="#285fa8"/>
+<text x="65" y="817" class="number">3</text>
+<text x="94" y="819" class="section">Pack lifetimes into the smallest eligible slots</text>
+<text x="48" y="858" class="small">Process groups by first write. Reuse only nonpersistent slots with:</text>
+<text x="48" y="898" class="code">slot.last_use &lt; tensor.first_use   &amp;&amp;   slot.capacity &gt;= tensor.bytes</text>
+<text x="1290" y="858" class="body">Choose the smallest fit.</text>
+<text x="1290" y="898" class="body">No fit? Add a slot.</text>
+<text x="370" y="948" class="axis">Conv</text>
+<path d="M370 963 V1091" fill="none" stroke="#e0e7ef" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="610" y="948" class="axis">ReLU 1</text>
+<path d="M610 963 V1091" fill="none" stroke="#e0e7ef" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="850" y="948" class="axis">Add</text>
+<path d="M850 963 V1091" fill="none" stroke="#e0e7ef" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="1090" y="948" class="axis">ReLU 2</text>
+<path d="M1090 963 V1091" fill="none" stroke="#e0e7ef" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<use href="#gpu-chip" x="60" y="975" width="34" height="34" style="color:#a65a14" aria-hidden="true"/>
+<text x="107" y="1000" class="body" style="fill:#a65a14">Buffer 2</text>
+<use href="#gpu-chip" x="60" y="1051" width="34" height="34" style="color:#127c75" aria-hidden="true"/>
+<text x="107" y="1076" class="body" style="fill:#127c75">Buffer 3</text>
+<rect x="370" y="973" width="240" height="40" rx="8" fill="#fae5c6" stroke="none" stroke-width="1.4" />
+<path d="M370 977 V1009" fill="none" stroke="#a65a14" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M610 977 V1009" fill="none" stroke="#a65a14" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="490.0" y="1001" class="interval">Tensor 1</text>
+<rect x="850" y="973" width="240" height="40" rx="8" fill="#fae5c6" stroke="none" stroke-width="1.4" />
+<path d="M850 977 V1009" fill="none" stroke="#a65a14" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M1090 977 V1009" fill="none" stroke="#a65a14" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="970.0" y="1001" class="interval">Tensor 3</text>
+<rect x="610" y="1049" width="240" height="40" rx="8" fill="#d8eee8" stroke="none" stroke-width="1.4" />
+<path d="M610 1053 V1085" fill="none" stroke="#127c75" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M850 1053 V1085" fill="none" stroke="#127c75" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="730.0" y="1077" class="interval">Tensor 2</text>
+<text x="48" y="1136" class="body">3 temporary tensors → 2 reusable slots. No GPU allocation yet.</text>
+<path d="M1250 928 V1138" fill="none" stroke="#dce4ec" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="1290" y="952" class="body">MemoryPlan output</text>
+<text x="1290" y="990" class="code">slots</text>
+<text x="1290" y="1017" class="small">Capacity, last use, persistent flag</text>
+<text x="1290" y="1052" class="code">tensor_slots</text>
+<text x="1290" y="1079" class="small">Tensor → slot assignment</text>
+<text x="1290" y="1114" class="code">constants</text>
+<text x="1445" y="1114" class="small">GPU-read constants</text>
+<path d="M48 1172 H1752" fill="none" stroke="#dce4ec" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="65" cy="1209" r="17" fill="#285fa8"/>
+<text x="65" y="1216" class="number">4</text>
+<text x="94" y="1218" class="section">Keep storage safe: branches, aliases, persistent data</text>
+<text x="48" y="1269" class="section">Extra consumer</text>
+<text x="48" y="1304" class="small">If Tensor 1 replaces the constant:</text>
+<rect x="60" y="1361" width="150" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="70" y="1372" width="28" height="28" style="color:#127c75" aria-hidden="true"/>
+<text x="106" y="1394" class="node" data-bounds="103,1366,100,40">Tensor 1</text>
+<rect x="335" y="1320" width="145" height="56" rx="10" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<text x="407.5" y="1358" class="op">ReLU 1</text>
+<rect x="335" y="1408" width="145" height="56" rx="10" fill="#f4effa" stroke="#d3c7e4" stroke-width="1.4" />
+<text x="407.5" y="1446" class="op">Add</text>
+<path d="M212 1386 H274 V1348 H330" fill="none" stroke="#285fa8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M274 1386 V1436 H330" fill="none" stroke="#285fa8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="48" y="1510" class="body">Last use moves to Add.</text>
+<text x="48" y="1544" class="small">Tensor 1 / Tensor 3 cannot reuse.</text>
+<path d="M600 1250 V1561" fill="none" stroke="#dce4ec" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="645" y="1269" class="section">Merge views</text>
+<text x="645" y="1304" class="small">Reshape / Flatten / Identity</text>
+<rect x="645" y="1350" width="150" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="655" y="1361" width="28" height="28" style="color:#127c75" aria-hidden="true"/>
+<text x="691" y="1383" class="node" data-bounds="688,1355,100,40">Tensor 4</text>
+<rect x="823" y="1344" width="125" height="62" rx="10" fill="#f5f6f8" stroke="#ccd3dd" stroke-width="1.4" stroke-dasharray="5 4"/>
+<text x="885.5" y="1382" class="op">Reshape</text>
+<rect x="976" y="1350" width="150" height="50" rx="25" fill="#f0f6ff" stroke="#c6d6e7" stroke-width="1.4" />
+<use href="#tensor-cube" x="986" y="1361" width="28" height="28" style="color:#127c75" aria-hidden="true"/>
+<text x="1022" y="1383" class="node" data-bounds="1019,1355,100,40">Output</text>
+<path d="M798 1375 H818" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M951 1375 H971" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="790" y="1430" width="200" height="50" rx="10" fill="#edf8f6" stroke="#acd4cc" stroke-width="1.4" />
+<use href="#gpu-chip" x="803" y="1440" width="30" height="30" style="color:#127c75" aria-hidden="true"/>
+<text x="845" y="1463" class="node" style="fill:#127c75">Buffer 4</text>
+<path d="M720 1403 V1455 H785" fill="none" stroke="#127c75" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="4 5" marker-end="url(#arrow)"/>
+<path d="M1051 1403 V1455 H996" fill="none" stroke="#127c75" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="4 5" marker-end="url(#arrow)"/>
+<text x="645" y="1510" class="small">One root; include all alias consumers.</text>
+<text x="645" y="1544" class="small">Output view reserves the entire group.</text>
+<path d="M1200 1250 V1561" fill="none" stroke="#dce4ec" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="1245" y="1269" class="section">Reserve persistent slots</text>
+<use href="#gpu-chip" x="1245" y="1309" width="34" height="34" style="color:#127c75" aria-hidden="true"/>
+<text x="1292" y="1334" class="body" style="fill:#127c75">Buffer 1</text>
+<text x="1450" y="1334" class="body">Input</text>
+<use href="#gpu-chip" x="1245" y="1379" width="34" height="34" style="color:#127c75" aria-hidden="true"/>
+<text x="1292" y="1404" class="body" style="fill:#127c75">Buffer 4</text>
+<text x="1450" y="1404" class="body">Output group</text>
+<use href="#gpu-chip" x="1245" y="1449" width="34" height="34" style="color:#127c75" aria-hidden="true"/>
+<text x="1292" y="1474" class="body" style="fill:#127c75">Buffer 5</text>
+<text x="1450" y="1474" class="body">GPU constant</text>
+<text x="1245" y="1544" class="small">Excluded from temporary reuse.</text>
+<path d="M48 1590 H1752" fill="none" stroke="#dce4ec" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="65" cy="1626" r="17" fill="#285fa8"/>
+<text x="65" y="1633" class="number">5</text>
+<text x="94" y="1635" class="section">Allocate once, then reuse during inference</text>
+<rect x="48" y="1680" width="500" height="108" rx="10" fill="#f7f9fc" stroke="#d7e1eb" stroke-width="1.4" />
+<text x="76" y="1720" class="body">MemoryPlan</text>
+<text x="76" y="1760" class="small">CPU metadata only</text>
+<rect x="650" y="1680" width="500" height="108" rx="10" fill="#f7f9fc" stroke="#d7e1eb" stroke-width="1.4" />
+<text x="678" y="1720" class="body">AllocateVulkanBuffers()</text>
+<text x="678" y="1760" class="small">One VulkanBuffer per slot</text>
+<rect x="1250" y="1680" width="500" height="108" rx="10" fill="#f7f9fc" stroke="#d7e1eb" stroke-width="1.4" />
+<use href="#gpu-chip" x="1270" y="1698" width="36" height="36" style="color:#127c75" aria-hidden="true"/>
+<text x="1324" y="1720" class="body">Inference</text>
+<text x="1278" y="1760" class="small">Overwrite after the last read</text>
+<path d="M560 1733 H635" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M1162 1733 H1235" fill="none" stroke="#52667d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<text x="48" y="1824" class="body">Static bindings + GPU barriers; no per-op graph-buffer allocation or freeing.</text>
+<text x="48" y="1861" class="tiny">Buffer IDs are schematic. Timeline positions are operation indices, not elapsed time.</text>
+</svg>

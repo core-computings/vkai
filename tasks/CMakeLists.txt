@@ -12,3 +12,8 @@ endforeach()
 foreach(model IN ITEMS resnet18 unet mobilenet_v2 yolov8n dncnn)
   target_link_libraries(vkai_${model}_test PRIVATE vkai)
 endforeach()
+
+if(UNIX)
+  add_executable(vkai_memory_benchmark MemoryBenchmark.cpp)
+  target_link_libraries(vkai_memory_benchmark PRIVATE vkai ${CMAKE_DL_LIBS})
+endif()

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "graph/Graph.h"
+#include "graph/MemoryPlanner.h"
 #include "layers/Layer.h"
 
 namespace vkai {
@@ -34,6 +35,8 @@ class Engine {
   Engine(Engine&&) = delete;
   Engine& operator=(Engine&&) = delete;
 
+  // Intermediate buffers may be overwritten after their last consumer. CPU-only
+  // parameters have no graph buffer; graph outputs remain available in Data().
   const Graph& GetGraph() const { return graph_; }
 
   // Convenience accessors for the first graph input and output.
@@ -61,9 +64,9 @@ class Engine {
  private:
   void RecordOperations(VkCommandBuffer command, size_t first, size_t count);
 
-  void AllocateVulkanBuffers();
+  void AllocateVulkanBuffers(const MemoryPlan& plan);
 
-  void UploadWeights();
+  void UploadConstants(const MemoryPlan& plan);
 
   void CreatePipeline();
 

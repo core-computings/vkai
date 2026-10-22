@@ -80,7 +80,7 @@ std::unique_ptr<Layer> CreateLayer(core::vulkan::VulkanContext* context, const O
     case OpType::Reshape:
       Require(TensorElementCount(*input) == TensorElementCount(*op.Outputs().front()), op,
               "Reshape must preserve the element count");
-      layer = std::make_unique<Reshape>(context);
+      layer = std::make_unique<Reshape>(context, input->ByteSize());
       break;
     case OpType::Dense: {
       Require(s.size() == 2 && out.size() == 2, op, "Gemm requires rank 2");
