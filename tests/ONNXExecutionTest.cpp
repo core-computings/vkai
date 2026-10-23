@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <onnx/onnx_pb.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include "OnnxTestModel.h"
+#include "TestUtils.h"
 #include "graph/Engine.h"
 #include "utils/ONNXLoader.h"
 
@@ -53,6 +55,56 @@ TEST(ONNXExecutionTest, PaddedMaxPoolPreservesNegativeValues) {
   Model::Ints(node, "pads", {1, 1, 1, 1});
   model.Check({-1, -2, -3, -4, -5, -6, -7, -8, -9}, {-1, -2, -4, -5});
 }
+TEST(ONNXExecutionTest, CeilMaxPoolIncludesPartialBottomAndRightWindows) {
+  Model model({1, 1, 4, 6}, {1, 1, 2, 3});
+  auto* node = model.Node("MaxPool", {"input"}, "pooled");
+  Model::Ints(node, "kernel_shape", {3, 3});
+  Model::Ints(node, "strides", {2, 2});
+  Model::Int(node, "ceil_mode", 1);
+  model.Node("Relu", {"pooled"});
+  // Positive maxima at the partial edges also test their inferred downstream shape.
+  model.Check({1,  -2,  3,  -4,  5,  -6,  -7,  -8,  -9,  -10, -11, -12,
+               13, -14, 15, -16, 17, -18, -19, -20, -21, -22, -23, -24},
+              {15, 17, 17, 15, 17, 17});
+}
+TEST(ONNXExecutionTest, CeilMaxPoolSkipsRightPaddingForCurrentOnnxSchema) {
+  Model model({1, 1, 3, 3}, {1, 1, 2, 2});
+  model.Proto().mutable_opset_import(0)->set_version(22);
+  auto* node = model.Node("MaxPool", {"input"});
+  Model::Ints(node, "kernel_shape", {2, 2});
+  Model::Ints(node, "strides", {2, 2});
+  Model::Ints(node, "pads", {1, 1, 1, 1});
+  Model::Int(node, "ceil_mode", 1);
+  model.Check({-1, -2, -3, -4, -5, -6, -7, -8, -9}, {-1, -2, -4, -5});
+}
+TEST(ONNXExecutionTest, RejectsLegacyCeilShapesContainingRightPaddingOnlyWindows) {
+  // Opset13 uses MaxPool12 shape inference, which infers 3x3 for this case.
+  // Preserve that graph's contract by rejecting it, rather than silently changing
+  // downstream tensor shapes to the corrected 2x2 windows used by PyTorch.
+  Model model({1, 1, 3, 3}, {1, 1, 3, 3});
+  auto* node = model.Node("MaxPool", {"input"});
+  Model::Ints(node, "kernel_shape", {2, 2});
+  Model::Ints(node, "strides", {2, 2});
+  Model::Ints(node, "pads", {1, 1, 1, 1});
+  Model::Int(node, "ceil_mode", 1);
+  try {
+    vkai::Engine engine(model.Save());
+    FAIL() << "Expected legacy right-padding-only output shape to be rejected";
+  } catch (const std::runtime_error& error) {
+    EXPECT_NE(std::string(error.what()).find("inferred right-padding-only windows"),
+              std::string::npos);
+  }
+}
+TEST(ONNXExecutionTest, RejectsInvalidMaxPoolCeilMode) {
+  for (int mode : {-1, 2}) {
+    Model model({1, 1, 4, 4}, {1, 1, 2, 2});
+    auto* node = model.Node("MaxPool", {"input"});
+    Model::Ints(node, "kernel_shape", {2, 2});
+    Model::Ints(node, "strides", {2, 2});
+    Model::Int(node, "ceil_mode", mode);
+    EXPECT_THROW(vkai::Engine(model.Save()), std::runtime_error);
+  }
+}
 TEST(ONNXExecutionTest, GlobalAveragePoolFlattenGemmAndIdentityParameters) {
   Model model({1, 2, 2, 2}, {1, 2});
   model.Weight("w", {2, 2}, {1, 2, 3, 4});
@@ -71,6 +123,88 @@ TEST(ONNXExecutionTest, ConcatOrdersChannelsAcrossBatches) {
   auto* node = model.Node("Concat", {"input", "skip"});
   Model::Int(node, "axis", 1);
   model.Check({1, 2, 3, 4}, {1, 2, 10, 11, 12, 13, 3, 4, 14, 15, 16, 17});
+}
+TEST(ONNXExecutionTest, FireModuleMatchesCpuAcrossBranchesRepeatedRunsAndChangedInput) {
+  constexpr int batch = 2, height = 3, width = 5, spatial = height * width;
+  constexpr int input_channels = 3, squeeze_channels = 2, expand1_channels = 3;
+  constexpr int expand3_channels = 2, output_channels = expand1_channels + expand3_channels;
+  const std::vector<float> squeeze_weights{1, .5F, -.25F, -.5F, .25F, 1};
+  const std::vector<float> squeeze_bias{-.125F, .25F};
+  const std::vector<float> expand1_weights{1, .5F, -1, .25F, .125F, -.5F};
+  const std::vector<float> expand1_bias{-.25F, .25F, .5F};
+  const auto expand3_weights = vkai::test::TestValues(expand3_channels * squeeze_channels * 9);
+  const std::vector<float> expand3_bias{.125F, -.25F};
+  Model model({batch, input_channels, height, width}, {batch, output_channels, height, width});
+  model.Weight("squeeze_w", {squeeze_channels, input_channels, 1, 1}, squeeze_weights);
+  model.Weight("squeeze_b", {squeeze_channels}, squeeze_bias);
+  model.Weight("expand1_w", {expand1_channels, squeeze_channels, 1, 1}, expand1_weights);
+  model.Weight("expand1_b", {expand1_channels}, expand1_bias);
+  model.Weight("expand3_w", {expand3_channels, squeeze_channels, 3, 3}, expand3_weights);
+  model.Weight("expand3_b", {expand3_channels}, expand3_bias);
+  model.Node("Conv", {"input", "squeeze_w", "squeeze_b"}, "squeeze");
+  model.Node("Relu", {"squeeze"}, "squeezed");
+  model.Node("Conv", {"squeezed", "expand1_w", "expand1_b"}, "expand1");
+  model.Node("Relu", {"expand1"}, "expanded1");
+  auto* expand3 = model.Node("Conv", {"squeezed", "expand3_w", "expand3_b"}, "expand3");
+  Model::Ints(expand3, "pads", {1, 1, 1, 1});
+  model.Node("Relu", {"expand3"}, "expanded3");
+  auto* concat = model.Node("Concat", {"expanded1", "expanded3"});
+  Model::Int(concat, "axis", 1);
+
+  // Direct NCHW CPU convolution and ReLU provide a reference independent of the
+  // importer, graph planner, GPU kernels and concatenation implementation.
+  auto convolution_relu = [&](const std::vector<float>& input, int ic, int oc, int kernel,
+                              const std::vector<float>& weights, const std::vector<float>& bias) {
+    std::vector<float> output(batch * oc * spatial);
+    for (int n = 0; n < batch; ++n)
+      for (int out = 0; out < oc; ++out)
+        for (int y = 0; y < height; ++y)
+          for (int x = 0; x < width; ++x) {
+            float value = bias[out];
+            for (int in = 0; in < ic; ++in)
+              for (int ky = 0; ky < kernel; ++ky)
+                for (int kx = 0; kx < kernel; ++kx) {
+                  const int iy = y + ky - kernel / 2, ix = x + kx - kernel / 2;
+                  if (iy >= 0 && iy < height && ix >= 0 && ix < width)
+                    value += input[((n * ic + in) * height + iy) * width + ix] *
+                             weights[((out * ic + in) * kernel + ky) * kernel + kx];
+                }
+            output[(n * oc + out) * spatial + y * width + x] = std::max(value, 0.F);
+          }
+    return output;
+  };
+  auto reference = [&](const std::vector<float>& input) {
+    const auto squeezed =
+        convolution_relu(input, input_channels, squeeze_channels, 1, squeeze_weights, squeeze_bias);
+    const auto expanded1 = convolution_relu(squeezed, squeeze_channels, expand1_channels, 1,
+                                            expand1_weights, expand1_bias);
+    const auto expanded3 = convolution_relu(squeezed, squeeze_channels, expand3_channels, 3,
+                                            expand3_weights, expand3_bias);
+    std::vector<float> output;
+    for (int n = 0; n < batch; ++n) {
+      output.insert(output.end(), expanded1.begin() + n * expand1_channels * spatial,
+                    expanded1.begin() + (n + 1) * expand1_channels * spatial);
+      output.insert(output.end(), expanded3.begin() + n * expand3_channels * spatial,
+                    expanded3.begin() + (n + 1) * expand3_channels * spatial);
+    }
+    return output;
+  };
+  const auto first = vkai::test::TestValues(batch * input_channels * spatial);
+  const auto changed = vkai::test::TestValues(batch * input_channels * spatial, .25F, 7);
+  const auto expected_first = reference(first), expected_changed = reference(changed);
+  ASSERT_NE(expected_first, expected_changed);
+  const auto path = model.Save();
+  for (size_t submission_limit : {1U, 99U}) {
+    SCOPED_TRACE(submission_limit);
+    vkai::Engine engine(path, submission_limit);
+    for (int iteration = 0; iteration < 3; ++iteration) {
+      SCOPED_TRACE(iteration);
+      engine.GetInputTensor()->PopulateTensor(iteration == 2 ? changed : first);
+      engine.ExecuteGraph();
+      vkai::test::ExpectNear(engine.GetOutputTensor()->Data(),
+                             iteration == 2 ? expected_changed : expected_first);
+    }
+  }
 }
 TEST(ONNXExecutionTest, TransposedConvolutionAndSigmoid) {
   Model model({1, 1, 1, 2}, {1, 1, 2, 4});

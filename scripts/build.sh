@@ -8,7 +8,8 @@ Usage: $0 [-t {macos|android}] [-r {0|unittests|models}] [-h]
 Build and run the selected tests. Defaults: -t macos -r unittests.
   0          Build all targets without running tests or models.
   unittests  Run all unit tests.
-  models     Run ResNet-18, U-Net, MobileNetV2, YOLOv8n, DnCNN, LR-ASPP, then GPU benchmarks.
+  models     Run ResNet-18, U-Net, MobileNetV2, SqueezeNet, YOLOv8n, DnCNN, LR-ASPP,
+             then GPU benchmarks.
 Android builds require ANDROID_NDK_ROOT and host glslc.
 Running Android tests also requires adb and a connected arm64 device.
 Running model tests requires exported ONNX models, inputs, and reference outputs.
@@ -34,7 +35,8 @@ case "$platform" in
   macos|android) ;;
   *) echo "Unsupported target platform: $platform" >&2; usage >&2; exit 2 ;;
 esac
-model_targets=(vkai_resnet18_test vkai_unet_test vkai_mobilenet_v2_test vkai_yolov8n_test
+model_targets=(vkai_resnet18_test vkai_unet_test vkai_mobilenet_v2_test
+               vkai_squeezenet_test vkai_yolov8n_test
                vkai_dncnn_test vkai_lraspp_test)
 case "$test_mode" in
   0) targets=(vkai_unittests "${model_targets[@]}") ;;
@@ -186,10 +188,10 @@ case "$test_mode" in
     run_cpp_tests "$build_dir/tests/vkai_unittests"
     ;;
   models)
-    for model in resnet18 unet mobilenet_v2 yolov8n dncnn lraspp; do
+    for model in resnet18 unet mobilenet_v2 squeezenet yolov8n dncnn lraspp; do
       run_model_test "$model"
     done
-    for model in mobilenet_v2 yolov8n dncnn lraspp; do
+    for model in mobilenet_v2 squeezenet yolov8n dncnn lraspp; do
       run_model_benchmark "$model"
     done
     ;;
