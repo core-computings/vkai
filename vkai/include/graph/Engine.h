@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "graph/Graph.h"
@@ -62,6 +63,8 @@ class Engine {
   InferenceBenchmark BenchmarkGraph(int warmup_runs = 5, int measured_runs = 30);
 
  private:
+  void FindConvReluFusions();
+
   void RecordOperations(VkCommandBuffer command, size_t first, size_t count);
 
   void AllocateVulkanBuffers(const MemoryPlan& plan);
@@ -81,8 +84,10 @@ class Engine {
 
   std::vector<std::shared_ptr<Operation>> topo_order_;
 
-  // Only operations with runtime layers, in dependency order.
+  // Runtime operations in dependency order. Fused Relu slots are retained to
+  // preserve submission boundaries (and watchdog budgets) across optimizations.
   std::vector<std::shared_ptr<Operation>> execution_order_;
+  std::unordered_set<const Operation*> fused_relus_;
   size_t operations_per_submission_;
 
   std::unordered_map<std::string, std::unique_ptr<Layer>> layers_;

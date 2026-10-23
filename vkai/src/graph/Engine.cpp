@@ -22,16 +22,43 @@ Engine::Engine(const std::string& onnx_path, size_t operations_per_submission)
   context_ = std::make_unique<core::vulkan::VulkanContext>(
       false, core::vulkan::QueueFamilyType::Compute, VK_NULL_HANDLE);
   context_->Init();
-  const auto memory_plan = BuildMemoryPlan(graph_, topo_order_);
+  FindConvReluFusions();
+  const auto memory_plan = BuildMemoryPlan(graph_, topo_order_, fused_relus_);
   AllocateVulkanBuffers(memory_plan);
   UploadConstants(memory_plan);
   CreatePipeline();
 
   for (const auto& operation : topo_order_) {
-    if (layers_.contains(operation->Name()) && operation->Type() != OpType::Reshape) {
+    if ((layers_.contains(operation->Name()) && operation->Type() != OpType::Reshape) ||
+        fused_relus_.contains(operation.get())) {
       execution_order_.push_back(operation);
     }
   }
+}
+
+void Engine::FindConvReluFusions() {
+#ifdef VKAI_ENABLE_CONV_RELU_FUSION
+  std::unordered_map<const Tensor*, std::vector<Operation*>> consumers;
+  for (const auto& operation : topo_order_)
+    for (const auto& [role, tensor] : operation->Inputs())
+      consumers[tensor.get()].push_back(operation.get());
+  for (const auto& operation : topo_order_) {
+    if (operation->Type() != OpType::Conv2D || operation->Outputs().size() != 1) continue;
+    const auto& output = operation->Outputs().front();
+    const auto& uses = consumers[output.get()];
+    if (uses.size() != 1 || uses.front()->Type() != OpType::Relu ||
+        std::find(graph_.Outputs().begin(), graph_.Outputs().end(), output) !=
+            graph_.Outputs().end())
+      continue;
+    const auto* relu = uses.front();
+    if (relu->Outputs().size() != 1 || output->GetShape() != relu->Outputs().front()->GetShape())
+      continue;
+    // Alias the activation output before planning storage. Redirecting a fused
+    // dispatch after planning could overwrite its still-live convolution input.
+    operation->SetAttribute("vkai_fuse_relu", true);
+    fused_relus_.insert(relu);
+  }
+#endif
 }
 
 void Engine::AllocateVulkanBuffers(const MemoryPlan& plan) {
@@ -70,6 +97,7 @@ void Engine::UploadConstants(const MemoryPlan& plan) {
 
 void Engine::CreatePipeline() {
   for (const auto& operation : topo_order_) {
+    if (fused_relus_.contains(operation.get())) continue;
     auto layer = CreateLayer(context_.get(), *operation);
     if (layer) layers_.emplace(operation->Name(), std::move(layer));
   }
@@ -90,6 +118,7 @@ void Engine::UploadInputs() {
 void Engine::RecordOperations(VkCommandBuffer command, size_t first, size_t count) {
   for (size_t i = first; i < first + count; ++i) {
     const auto& operation = execution_order_[i];
+    if (fused_relus_.contains(operation.get())) continue;
     auto& layer = *layers_.at(operation->Name());
     RecordLayer(layer, *operation, command);
     Synchronization::InsertComputeBarrier(command);

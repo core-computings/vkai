@@ -55,6 +55,14 @@ TEST_F(Conv2DTest, MatchesDilatedConvolutionWithCpuReference) {
 TEST_F(Conv2DTest, AppliesBiasInPointwiseConvolution) {
   CheckConvolution(context, 2, 5, 3, 7, 11, 1, 1, 0, 1, true);
 }
+TEST_F(Conv2DTest, TiledConvolutionHandlesPartialTilesAndBatches) {
+  // Nonmultiples of K=16, channels=16 and spatial=32 exercise all tile tails;
+  // width=11 also makes spatial tiles cross image rows and padded edges.
+  CheckConvolution(context, 2, 17, 19, 7, 11, 3, 3, 1, 1, true);
+}
+TEST_F(Conv2DTest, TiledConvolutionMatchesDnCNNChannelsWithoutBias) {
+  CheckConvolution(context, 1, 64, 64, 8, 9, 3, 3, 1, 1, false);
+}
 }  // namespace vkai::test
 
 namespace {

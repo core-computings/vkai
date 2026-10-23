@@ -68,9 +68,7 @@ int main(int argc, char** argv) {
     return 2;
   }
   const int first = benchmark ? 2 : 1;
-  // Keep each mobile GPU job below the driver's watchdog limit. Use the same
-  // submission boundaries for validation and benchmarking on both platforms.
-  vkai::Engine engine(argv[first], 8);
+  vkai::Engine engine(argv[first]);
   model_test::RequireShape(*engine.GetInputTensor(), {1, kChannels, kHeight, kWidth});
   model_test::RequireShape(*engine.GetOutputTensor(), {1, kChannels, kHeight, kWidth});
   const auto noisy = model_test::ReadFloats(argv[first + 1]);

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "graph/Graph.h"
@@ -21,9 +22,10 @@ struct MemoryPlan {
 };
 
 // Plans storage without creating Vulkan objects. Reshape aliases share one
-// lifetime; CPU-only parameters need no graph buffer. Inputs, outputs and GPU
+// lifetime, as do Conv/Relu pairs verified by the engine and listed in fused_relus.
+// CPU-only parameters need no graph buffer. Inputs, outputs and GPU
 // constants have dedicated storage so repeated execution preserves their data.
-MemoryPlan BuildMemoryPlan(const Graph& graph,
-                           const std::vector<std::shared_ptr<Operation>>& order);
+MemoryPlan BuildMemoryPlan(const Graph& graph, const std::vector<std::shared_ptr<Operation>>& order,
+                           const std::unordered_set<const Operation*>& fused_relus = {});
 
 }  // namespace vkai

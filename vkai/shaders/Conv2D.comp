@@ -21,7 +21,7 @@ layout(binding = 0) uniform UniformBufferObject {
     int dilation_width;
     int dilation_height;
     int groups;
-    int reserved_0;
+    int fuse_relu;
     int reserved_1;
     int reserved_2;
 }
@@ -114,5 +114,5 @@ void main() {
         }
     }
 
-    output_buffer[global_idx] = sum;
+    output_buffer[global_idx] = ubo.fuse_relu != 0 ? max(sum, 0.0) : sum;
 }

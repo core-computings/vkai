@@ -27,7 +27,7 @@ Conv2D::Conv2D(core::vulkan::VulkanContext* context, int input_channels, int out
                int input_height, int input_width, int kernel_height, int kernel_width,
                int stride_height, int stride_width, int padding_height, int padding_width,
                PaddingType padding_type, int batch_size, int dilation_height, int dilation_width,
-               int groups)
+               int groups, bool fuse_relu)
     : Layer(context),
       uniform_buffer_(context, sizeof(UniformData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                       kHostVisibleMemory),
@@ -55,7 +55,7 @@ Conv2D::Conv2D(core::vulkan::VulkanContext* context, int input_channels, int out
           .dilation_width = dilation_width,
           .dilation_height = dilation_height,
           .groups = groups,
-          .reserved_0 = 0,
+          .fuse_relu = fuse_relu ? 1 : 0,
           .reserved_1 = 0,
           .reserved_2 = 0,
       } {
@@ -81,6 +81,16 @@ Conv2D::Conv2D(core::vulkan::VulkanContext* context, int input_channels, int out
     std::cerr << "Conv2D output dimensions must be positive\n";
     return;
   }
+
+#ifdef VKAI_ENABLE_TILED_CONV
+  // Small/depthwise/strided convolutions retain the general kernel. The tiled
+  // kernel amortizes its shared-memory barriers across 16 channels x 32 pixels.
+  use_tiled_ = kernel_height == 3 && kernel_width == 3 && stride_height == 1 && stride_width == 1 &&
+               dilation_height == 1 && dilation_width == 1 && padding_height == 1 &&
+               padding_width == 1 && padding_type == PaddingType::Zero && groups == 1 &&
+               input_channels >= 16 && output_channels >= 16 &&
+               static_cast<int64_t>(input_height) * input_width >= 64;
+#endif
 
   uniform_buffer_.MapData(
       [this](void* data) { std::memcpy(data, &uniform_data_, sizeof(UniformData)); });
@@ -157,6 +167,15 @@ void Conv2D::Execute(const VkCommandBuffer& command_buffer,
   vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1,
                           &descriptor_set_, 0, nullptr);
 
+  if (use_tiled_) {
+    const uint32_t spatial =
+        static_cast<uint32_t>(uniform_data_.output_height) * uniform_data_.output_width;
+    vkCmdDispatch(command_buffer, (spatial + 31) / 32,
+                  (static_cast<uint32_t>(uniform_data_.output_channels) + 15) / 16,
+                  static_cast<uint32_t>(uniform_data_.batch_size));
+    return;
+  }
+
   const uint32_t output_elements =
       static_cast<uint32_t>(uniform_data_.batch_size * uniform_data_.output_channels *
                             uniform_data_.output_height * uniform_data_.output_width);
@@ -174,6 +193,12 @@ std::vector<core::vulkan::BindingInfo> Conv2D::GetBindingInfo() const {
 }
 
 const std::vector<uint32_t>& Conv2D::LoadShaderCode() const {
+  if (use_tiled_) {
+    static const std::vector<uint32_t> tiled_shader_code =
+#include "Conv2DTiled.comp.spv"
+        ;
+    return tiled_shader_code;
+  }
   static const std::vector<uint32_t> shader_code =
 #include "Conv2D.comp.spv"
       ;
@@ -185,7 +210,7 @@ const std::string Conv2D::GetPipelineCache() const {
   if (cache_dir.empty()) {
     return "";
   }
-  return cache_dir + "/conv2d.cache";
+  return cache_dir + (use_tiled_ ? "/conv2d_tiled.cache" : "/conv2d.cache");
 }
 
 }  // namespace vkai

@@ -1,11 +1,73 @@
 #include <cstring>
 
 #include "OnnxTestModel.h"
+#include "TestUtils.h"
 #include "layers/Reshape.h"
 #include "utils/BufferUtils.h"
 #include "utils/Synchronization.h"
 
 namespace vkai::test {
+namespace {
+void CheckConvRelu(int channels, int kernel) {
+  constexpr int batch = 2, height = 7, width = 11;
+  const std::vector<int64_t> shape{batch, channels, height, width};
+  TestModel model(shape, shape);
+  std::vector<float> weights(channels * channels * kernel * kernel, 0.F);
+  for (int c = 0; c < channels; ++c)
+    weights[(c * channels + c) * kernel * kernel + kernel * kernel / 2] = c % 2 ? -1.F : 1.F;
+  model.Weight("w", {channels, channels, kernel, kernel}, weights);
+  model.Weight("b", {channels}, std::vector<float>(channels, -.25F));
+  model.Node("Relu", {"input"}, "features");
+  auto* conv = model.Node("Conv", {"features", "w", "b"}, "raw");
+  TestModel::Ints(conv, "pads", {kernel / 2, kernel / 2, kernel / 2, kernel / 2});
+  model.Node("Relu", {"raw"}, "activated");
+  model.Node("Sigmoid", {"activated"});
+  Engine engine(model.Save(), 1);  // Conv and Relu straddle a submission boundary.
+  EXPECT_NE(engine.GetGraph().FindTensor("features")->Buffer().buffer,
+            engine.GetGraph().FindTensor("raw")->Buffer().buffer);
+  for (int offset : {0, 7}) {
+    const auto input = TestValues(batch * channels * height * width, .125F, offset);
+    std::vector<float> expected(input.size());
+    for (size_t i = 0; i < input.size(); ++i) {
+      const auto channel = (i / (height * width)) % channels;
+      const float value = std::max(input[i], 0.F) * (channel % 2 ? -1.F : 1.F) - .25F;
+      expected[i] = 1.F / (1.F + std::exp(-std::max(value, 0.F)));
+    }
+    engine.GetInputTensor()->PopulateTensor(input);
+    engine.ExecuteGraph();
+    ExpectNear(engine.GetOutputTensor()->Data(), expected);
+    const auto result = engine.BenchmarkGraph(0, 2);
+    EXPECT_EQ(result.submissions_per_run, 4U);
+    ExpectNear(engine.GetOutputTensor()->Data(), expected);
+  }
+}
+}  // namespace
+
+TEST(EngineTest, ConvReluPreservesValuesAndLifetimesInGeneralKernel) { CheckConvRelu(3, 1); }
+TEST(EngineTest, ConvReluPreservesValuesAndLifetimesInTiledKernel) { CheckConvRelu(17, 3); }
+
+TEST(EngineTest, ConvReluPreservesUnactivatedBranchValues) {
+  TestModel model({1, 1, 1, 2}, {1, 1, 1, 2});
+  model.Weight("w", {1, 1, 1, 1}, {-1});
+  model.Node("Conv", {"input", "w"}, "raw");
+  model.Node("Relu", {"raw"}, "positive");
+  model.Node("Add", {"raw", "positive"});
+  model.Check({2, -3}, {-2, 6});
+}
+
+TEST(EngineTest, ConvReluPreservesUnactivatedGraphOutput) {
+  TestModel model({1, 1, 1, 2}, {1, 1, 1, 2});
+  model.Weight("w", {1, 1, 1, 1}, {-1});
+  model.Node("Conv", {"input", "w"}, "raw");
+  model.Node("Relu", {"raw"});
+  TestModel::Value(model.Proto().mutable_graph()->add_output(), "raw", {1, 1, 1, 2});
+  Engine engine(model.Save());
+  engine.GetInputTensor()->PopulateTensor({2, -3});
+  engine.ExecuteGraph();
+  EXPECT_EQ(engine.GetOutputTensor()->Data(), (std::vector<float>{0, 3}));
+  EXPECT_EQ(engine.GetGraph().Outputs().at(1)->Data(), (std::vector<float>{-2, 3}));
+}
+
 TEST(EngineTest, AllocatesBuffersAndBuildsTopologicalLayers) {
   TestModel model({2, 1, 2, 3}, {2, 3});
   MakeTestGraph(model);

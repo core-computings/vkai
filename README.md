@@ -73,7 +73,7 @@ adb devices
 ```
 
 Default: `-t macos -r unittests`; use `-r 0` to compile only.
-Both platforms pass 119 unit tests and seven model tests; see
+Both platforms pass 125 unit tests and seven model tests; see
 [model instructions](python/models/README.md) for details.
 
 ## Model parameters, memory, and latency
@@ -83,10 +83,10 @@ GPU times are the mean of 30 runs after 5 warm-up runs.
 
 | Model       | Input   | Parameters | Vulkan memory (MiB) | macOS GPU (ms) | Android GPU (ms) |
 | ----------- | ------- | ----------: | -------------------: | --------------: | ----------------: |
-| ResNet-18   | 224×224 | 11,689,512 | 52.08               | 18.17          | 135.73           |
-| U-Net       | 256×256 | 7,763,041  | 85.13               | 138.82         | 1075.42          |
-| MobileNetV2 | 224×224 | 3,504,872  | 26.28               | 7.46           | 36.43            |
-| YOLOv8n     | 640×640 | 3,151,904  | 49.27               | 46.85          | 358.86           |
-| DnCNN       | 256×256 | 668,227    | 36.05               | 393.90         | 3143.81          |
-| LR-ASPP     | 320×320 | 3,221,538  | 38.82               | 12.56          | 87.58            |
-| SqueezeNet  | 224×224 | 1,235,496  | 13.53               | 5.21           | 30.44            |
+| ResNet-18   | 224×224 | 11,689,512 | 52.08               | 9.85           | 97.46            |
+| U-Net       | 256×256 | 7,763,041  | 85.13               | 55.98          | 651.13           |
+| MobileNetV2 | 224×224 | 3,504,872  | 26.28               | 5.20           | 36.47            |
+| YOLOv8n     | 640×640 | 3,151,904  | 49.27               | 26.03          | 244.00           |
+| DnCNN       | 256×256 | 668,227    | 36.05               | 77.97          | 1403.40          |
+| LR-ASPP     | 320×320 | 3,221,538  | 38.82               | 12.19          | 87.85            |
+| SqueezeNet  | 224×224 | 1,235,496  | 13.53               | 2.73           | 24.08            |
