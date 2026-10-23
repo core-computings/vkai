@@ -14,3 +14,7 @@ __pycache__/
 *.bin
 python/vkai_py
 *.onnx
+
+/.agents/
+/.claude/
+/.codex/

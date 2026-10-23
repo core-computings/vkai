@@ -1,0 +1,8 @@
+scripts:
+  setup: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git submodule sync --recursive
+    git submodule update --init --recursive
+    ./external/jstack/setup.sh
+setupAgentStartupPolicy: wait-for-setup
