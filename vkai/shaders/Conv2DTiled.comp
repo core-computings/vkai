@@ -1,0 +1,102 @@
+#version 450
+
+// Same bindings and uniform layout as Conv2D.comp; weights remain OIHW and
+// activations NCHW. No im2col allocation or weight repacking is needed.
+layout(binding = 0) uniform UniformBufferObject {
+    int input_width;
+    int input_height;
+    int input_channels;
+    int batch_size;
+    int output_width;
+    int output_height;
+    int output_channels;
+    int padding_type;
+    int kernel_width;
+    int kernel_height;
+    int stride_width;
+    int stride_height;
+    int padding_width;
+    int padding_height;
+    int dilation_width;
+    int dilation_height;
+    int groups;
+    int fuse_relu;
+    int reserved_1;
+    int reserved_2;
+} ubo;
+
+layout(binding = 1, std430) readonly buffer InputBuffer { float input_buffer[]; };
+layout(binding = 2, std430) readonly buffer WeightBuffer { float weight_buffer[]; };
+layout(binding = 3, std430) writeonly buffer OutputBuffer { float output_buffer[]; };
+layout(binding = 4, std430) readonly buffer BiasBuffer { float bias_buffer[]; };
+
+// 64 threads cooperatively compute 16 output channels x 32 spatial positions.
+// Each thread accumulates two channels x four pixels in registers. K is the
+// flattened input-channel / 3x3-kernel dimension, consumed in blocks of 16.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+const int TILE_K = 16;
+shared float weights[16][TILE_K];
+shared float pixels[TILE_K][32];
+
+void main() {
+    int lane = int(gl_LocalInvocationIndex);
+    int column = int(gl_LocalInvocationID.x) * 4;
+    int row = int(gl_LocalInvocationID.y) * 2;
+    int spatial_base = int(gl_WorkGroupID.x) * 32;
+    int channel_base = int(gl_WorkGroupID.y) * 16;
+    int batch = int(gl_WorkGroupID.z);
+    int spatial_size = ubo.output_width * ubo.output_height;
+    int reduction_size = ubo.input_channels * 9;
+    int channel0 = channel_base + row;
+    int channel1 = channel0 + 1;
+    vec4 sum0 = vec4(channel0 < ubo.output_channels ? bias_buffer[channel0] : 0.0);
+    vec4 sum1 = vec4(channel1 < ubo.output_channels ? bias_buffer[channel1] : 0.0);
+
+    for (int base = 0; base < reduction_size; base += TILE_K) {
+        for (int i = lane; i < 16 * TILE_K; i += 64) {
+            int out_channel = channel_base + i / TILE_K;
+            int k = base + i % TILE_K;
+            weights[i / TILE_K][i % TILE_K] =
+                out_channel < ubo.output_channels && k < reduction_size
+                    ? weight_buffer[out_channel * reduction_size + k] : 0.0;
+        }
+        for (int i = lane; i < TILE_K * 32; i += 64) {
+            int k = base + i / 32;
+            int position = spatial_base + i % 32;
+            int y = position / ubo.output_width + (k % 9) / 3 - 1;
+            int x = position % ubo.output_width + k % 3 - 1;
+            float value = 0.0;
+            if (k < reduction_size && position < spatial_size &&
+                x >= 0 && x < ubo.input_width && y >= 0 && y < ubo.input_height) {
+                value = input_buffer[((batch * ubo.input_channels + k / 9) *
+                                      ubo.input_height + y) * ubo.input_width + x];
+            }
+            pixels[i / 32][i % 32] = value;
+        }
+        // Every thread participates, including partial channel/spatial tiles.
+        barrier();
+        for (int k = 0; k < TILE_K; ++k) {
+            vec4 value = vec4(pixels[k][column], pixels[k][column + 1],
+                              pixels[k][column + 2], pixels[k][column + 3]);
+            sum0 += value * weights[row][k];
+            sum1 += value * weights[row + 1][k];
+        }
+        barrier();
+    }
+
+    if (ubo.fuse_relu != 0) {
+        sum0 = max(sum0, vec4(0.0));
+        sum1 = max(sum1, vec4(0.0));
+    }
+    for (int i = 0; i < 4; ++i) {
+        int position = spatial_base + column + i;
+        if (position < spatial_size) {
+            if (channel0 < ubo.output_channels)
+                output_buffer[(batch * ubo.output_channels + channel0) * spatial_size + position] =
+                    sum0[i];
+            if (channel1 < ubo.output_channels)
+                output_buffer[(batch * ubo.output_channels + channel1) * spatial_size + position] =
+                    sum1[i];
+        }
+    }
+}

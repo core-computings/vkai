@@ -39,8 +39,8 @@ struct Lifetime {
 
 }  // namespace
 
-MemoryPlan BuildMemoryPlan(const Graph& graph,
-                           const std::vector<std::shared_ptr<Operation>>& order) {
+MemoryPlan BuildMemoryPlan(const Graph& graph, const std::vector<std::shared_ptr<Operation>>& order,
+                           const std::unordered_set<const Operation*>& fused_relus) {
   std::unordered_map<const Tensor*, const Tensor*> roots;
   std::unordered_map<const Tensor*, OpType> producers;
   for (const auto& [name, tensor] : graph.Tensors()) roots.emplace(tensor.get(), tensor.get());
@@ -51,13 +51,13 @@ MemoryPlan BuildMemoryPlan(const Graph& graph,
   for (const auto& operation : order) {
     for (const auto& output : operation->Outputs())
       producers.emplace(output.get(), operation->Type());
-    if (operation->Type() == OpType::Reshape) {
+    if (operation->Type() == OpType::Reshape || fused_relus.contains(operation.get())) {
       if (operation->Outputs().size() != 1)
-        throw std::runtime_error("Reshape requires one output: " + operation->Name());
+        throw std::runtime_error("Aliased operation requires one output: " + operation->Name());
       const auto& input = operation->GetInput("input");
       const auto& output = operation->Outputs().front();
       if (input->ByteSize() != output->ByteSize())
-        throw std::runtime_error("Reshape must preserve the element count: " + operation->Name());
+        throw std::runtime_error("Aliased operation must preserve byte size: " + operation->Name());
       roots.at(root_of(output.get())) = root_of(input.get());
     }
   }
@@ -94,7 +94,9 @@ MemoryPlan BuildMemoryPlan(const Graph& graph,
   }
   for (size_t i = 0; i < order.size(); ++i) {
     const auto& operation = *order[i];
-    if (operation.Type() == OpType::Constant || operation.Type() == OpType::Reshape) continue;
+    if (operation.Type() == OpType::Constant || operation.Type() == OpType::Reshape ||
+        fused_relus.contains(&operation))
+      continue;
     for (const auto& output : operation.Outputs()) {
       auto& lifetime = lifetime_of(output);
       lifetime.required = true;

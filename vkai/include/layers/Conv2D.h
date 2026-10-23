@@ -14,7 +14,8 @@ class Conv2D : public Layer {
   Conv2D(core::vulkan::VulkanContext* context, int input_channels, int output_channels,
          int input_height, int input_width, int kernel_height, int kernel_width, int stride_height,
          int stride_width, int padding_height, int padding_width, PaddingType padding_type,
-         int batch_size = 1, int dilation_height = 1, int dilation_width = 1, int groups = 1);
+         int batch_size = 1, int dilation_height = 1, int dilation_width = 1, int groups = 1,
+         bool fuse_relu = false);
 
   void MapWeights(const std::vector<float>& weights, const std::vector<float>& bias = {});
 
@@ -56,7 +57,7 @@ class Conv2D : public Layer {
     int dilation_width;
     int dilation_height;
     int groups;
-    int reserved_0;
+    int fuse_relu;
     int reserved_1;
     int reserved_2;
   };
@@ -69,6 +70,7 @@ class Conv2D : public Layer {
   UniformData uniform_data_;
   bool valid_ = false;
   bool weights_mapped_ = false;
+  bool use_tiled_ = false;
 };
 
 }  // namespace vkai
