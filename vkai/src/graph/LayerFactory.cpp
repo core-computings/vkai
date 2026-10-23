@@ -159,18 +159,25 @@ std::unique_ptr<Layer> CreateLayer(core::vulkan::VulkanContext* context, const O
       break;
     case OpType::MaxPool2D: {
       Require(s.size() == 4 && out.size() == 4, op, "MaxPool requires NCHW");
-      Require(Attribute<int64_t>(op, "ceil_mode", 0) == 0 &&
-                  Pair(op, "dilations", 1) == std::vector<int64_t>({1, 1}) &&
+      const auto ceil_mode = Attribute<int64_t>(op, "ceil_mode", 0);
+      Require(ceil_mode == 0 || ceil_mode == 1, op, "MaxPool ceil_mode must be 0 or 1");
+      Require(Pair(op, "dilations", 1) == std::vector<int64_t>({1, 1}) &&
                   Attribute<int64_t>(op, "storage_order", 0) == 0,
-              op, "MaxPool ceil mode, dilation and storage order are unsupported");
+              op, "MaxPool dilation and storage order are unsupported");
       const auto k = Pair(op, "kernel_shape", 0);
       const auto st = Pair(op, "strides", 1);
       const auto p = Padding(op);
       Require(k[0] > 0 && k[1] > 0 && st[0] > 0 && st[1] > 0, op, "Invalid pooling dimensions");
       auto pool = std::make_unique<MaxPool2D>(context, s[1], s[2], s[3], k[0], k[1], st[0], st[1],
-                                              s[0], p[0], p[1]);
+                                              s[0], p[0], p[1], ceil_mode == 1);
+      // Older ONNX schemas can infer an extra ceil window starting entirely in
+      // right padding. Reject that shape rather than silently changing downstream
+      // tensors or executing empty windows.
       Require(out == std::vector<int>({s[0], s[1], pool->OutputHeight(), pool->OutputWidth()}), op,
-              "MaxPool output shape mismatch");
+              ceil_mode == 1
+                  ? "MaxPool ceil output shape mismatch; inferred right-padding-only windows "
+                    "are unsupported"
+                  : "MaxPool output shape mismatch");
       layer = std::move(pool);
       break;
     }

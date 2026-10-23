@@ -1,16 +1,37 @@
 #include "layers/MaxPool2D.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 
 #include "utils/BufferUtils.h"
 
 namespace vkai {
+namespace {
+
+int PoolOutputSize(int input, int kernel, int stride, int padding, bool ceil_mode) {
+  const int64_t numerator = static_cast<int64_t>(input) + 2LL * padding - kernel;
+  // C++ division truncates toward zero. Round explicitly for both modes, including
+  // a ceil window whose kernel is slightly larger than the padded input.
+  int64_t output = numerator / stride + 1;
+  if (ceil_mode && numerator % stride > 0) ++output;
+  if (!ceil_mode && numerator % stride < 0) --output;
+  if (ceil_mode) {
+    const int64_t valid_starts = (static_cast<int64_t>(input) + padding + stride - 1) / stride;
+    output = std::min(output, valid_starts);
+  }
+  return output > 0 && output <= std::numeric_limits<int>::max() ? static_cast<int>(output) : 0;
+}
+
+}  // namespace
 
 MaxPool2D::MaxPool2D(core::vulkan::VulkanContext* context, int input_channels, int input_height,
                      int input_width, int kernel_height, int kernel_width, int stride_height,
-                     int stride_width, int batch_size, int padding_height, int padding_width)
+                     int stride_width, int batch_size, int padding_height, int padding_width,
+                     bool ceil_mode)
     : Layer(context),
       uniform_buffer_(context, sizeof(UniformData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                       kHostVisibleMemory),
@@ -38,9 +59,10 @@ MaxPool2D::MaxPool2D(core::vulkan::VulkanContext* context, int input_channels, i
     std::cerr << "MaxPool2D padding must not be negative\n";
     return;
   }
-  uniform_data_.output_width = (input_width + 2 * padding_width - kernel_width) / stride_width + 1;
+  uniform_data_.output_width =
+      PoolOutputSize(input_width, kernel_width, stride_width, padding_width, ceil_mode);
   uniform_data_.output_height =
-      (input_height + 2 * padding_height - kernel_height) / stride_height + 1;
+      PoolOutputSize(input_height, kernel_height, stride_height, padding_height, ceil_mode);
   if (uniform_data_.output_height <= 0 || uniform_data_.output_width <= 0) {
     std::cerr << "MaxPool2D kernel must fit within the input\n";
     return;

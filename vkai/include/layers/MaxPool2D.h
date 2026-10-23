@@ -4,12 +4,14 @@
 
 namespace vkai {
 
-// Max pooling over NCHW tensors with symmetric zero-padding.
+// Max pooling over NCHW tensors with symmetric padding; padded samples are excluded.
+// Ceil mode includes partial windows but excludes starts in the right padded region.
 class MaxPool2D : public Layer {
  public:
   MaxPool2D(core::vulkan::VulkanContext* context, int input_channels, int input_height,
             int input_width, int kernel_height, int kernel_width, int stride_height,
-            int stride_width, int batch_size = 1, int padding_height = 0, int padding_width = 0);
+            int stride_width, int batch_size = 1, int padding_height = 0, int padding_width = 0,
+            bool ceil_mode = false);
 
   void Init() override;
 

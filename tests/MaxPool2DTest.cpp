@@ -8,12 +8,15 @@ namespace vkai::test {
 using MaxPool2DTest = GpuTest;
 
 void CheckMaxPool(core::vulkan::VulkanContext& context, int batch, int h, int w, int kh, int kw,
-                  int sh, int sw, int ph, int pw, bool negative) {
+                  int sh, int sw, int ph, int pw, bool negative, bool ceil_mode = false,
+                  int expected_height = 0, int expected_width = 0) {
   constexpr int channels = 3;
   auto input = TestValues(batch * channels * h * w);
   if (negative)
     for (auto& value : input) value = -std::abs(value) - .25F;
-  const int oh = (h + 2 * ph - kh) / sh + 1, ow = (w + 2 * pw - kw) / sw + 1;
+  // Ceil cases provide explicit expected extents, independently of the layer's formula.
+  const int oh = expected_height ? expected_height : (h + 2 * ph - kh) / sh + 1;
+  const int ow = expected_width ? expected_width : (w + 2 * pw - kw) / sw + 1;
   std::vector<float> expected(batch * channels * oh * ow, -std::numeric_limits<float>::infinity());
   for (int plane = 0; plane < batch * channels; ++plane)
     for (int y = 0; y < oh; ++y)
@@ -24,7 +27,7 @@ void CheckMaxPool(core::vulkan::VulkanContext& context, int batch, int h, int w,
               auto& value = expected[(plane * oh + y) * ow + x];
               value = std::max(value, input[(plane * h + iy) * w + ix]);
             }
-  MaxPool2D layer(&context, channels, h, w, kh, kw, sh, sw, batch, ph, pw);
+  MaxPool2D layer(&context, channels, h, w, kh, kw, sh, sw, batch, ph, pw, ceil_mode);
   EXPECT_EQ(layer.OutputHeight(), oh);
   EXPECT_EQ(layer.OutputWidth(), ow);
   layer.Init();
@@ -41,5 +44,24 @@ TEST_F(MaxPool2DTest, PaddingPreservesNegativeValues) {
 }
 TEST_F(MaxPool2DTest, PoolsNonSquareWindowsAndStrides) {
   CheckMaxPool(context, 2, 7, 11, 2, 3, 1, 2, 0, 1, false);
+}
+TEST_F(MaxPool2DTest, CeilIncludesPartialBottomAndRightWindows) {
+  MaxPool2D floor(&context, 3, 4, 6, 3, 3, 2, 2);
+  EXPECT_EQ(floor.OutputHeight(), 1);
+  EXPECT_EQ(floor.OutputWidth(), 2);
+  CheckMaxPool(context, 2, 4, 6, 3, 3, 2, 2, 0, 0, false, true, 2, 3);
+}
+TEST_F(MaxPool2DTest, CeilPreservesNegativeValuesWithRectangularWindowsAndStrides) {
+  CheckMaxPool(context, 2, 6, 8, 3, 4, 2, 3, 1, 1, true, true, 4, 3);
+}
+TEST_F(MaxPool2DTest, CeilSkipsWindowsStartingInRightPadding) {
+  // A raw ceil division would produce 3x4, including entirely padded windows.
+  CheckMaxPool(context, 2, 3, 5, 2, 2, 2, 2, 1, 1, true, true, 2, 3);
+}
+TEST_F(MaxPool2DTest, CeilSupportsKernelLargerThanInput) {
+  CheckMaxPool(context, 2, 2, 4, 3, 5, 2, 2, 0, 0, true, true, 1, 1);
+  MaxPool2D floor(&context, 3, 2, 4, 3, 5, 2, 2);
+  EXPECT_EQ(floor.OutputHeight(), 0);
+  EXPECT_EQ(floor.OutputWidth(), 0);
 }
 }  // namespace vkai::test
