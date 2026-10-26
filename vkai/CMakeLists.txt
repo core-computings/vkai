@@ -8,6 +8,15 @@ file(GLOB_RECURSE vkai_SRC CONFIGURE_DEPENDS "src/*.cpp")
 
 add_library(vkai ${vkai_SRC})
 
+option(VKAI_ENABLE_TILED_CONV "Use the tiled FP32 3x3 convolution kernel" ON)
+if(VKAI_ENABLE_TILED_CONV)
+    target_compile_definitions(vkai PRIVATE VKAI_ENABLE_TILED_CONV)
+endif()
+option(VKAI_ENABLE_CONV_RELU_FUSION "Fuse exclusive Conv2D + Relu pairs" ON)
+if(VKAI_ENABLE_CONV_RELU_FUSION)
+    target_compile_definitions(vkai PRIVATE VKAI_ENABLE_CONV_RELU_FUSION)
+endif()
+
 # ONNX's public protobuf headers contain intentionally unused parameters. Keep
 # the exception limited to the translation unit that imports those headers.
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")

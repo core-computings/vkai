@@ -133,9 +133,10 @@ std::unique_ptr<Layer> CreateLayer(core::vulkan::VulkanContext* context, const O
         conv->MapWeights(op.GetInput("weights")->Data(), Bias(op));
         layer = std::move(conv);
       } else {
-        auto conv = std::make_unique<Conv2D>(context, s[1], out[1], s[2], s[3], k[0], k[1],
-                                             strides[0], strides[1], p[0], p[1], PaddingType::Zero,
-                                             s[0], dilations[0], dilations[1], groups);
+        auto conv =
+            std::make_unique<Conv2D>(context, s[1], out[1], s[2], s[3], k[0], k[1], strides[0],
+                                     strides[1], p[0], p[1], PaddingType::Zero, s[0], dilations[0],
+                                     dilations[1], groups, Attribute(op, "vkai_fuse_relu", false));
         Require(out[2] == conv->OutputHeight() && out[3] == conv->OutputWidth(), op,
                 "Conv output shape mismatch");
         conv->MapWeights(op.GetInput("weights")->Data(), Bias(op));

@@ -32,7 +32,7 @@ SqueezeNet 使用 Torchvision 未改写的 1.1 架构原模型和 `weights.trans
 
 DnCNN 使用 `dncnn_color_blind.pth`，校验固定 SHA-256；网络结构与测试图来源固定到 KAIR 的 `fc1732f4a4514e42ce15e5b3a1e18c828af47a1e`。官方推理权重已经融合 BN，导出的 ONNX 仅含 Conv、Relu、Sub，均由现有算子执行。输入为 `[1,3,256,256]` float32 RGB，随机种子为 0；噪声添加到 `[0,1]` 原图后不裁剪、不量化。PSNR 使用未裁剪 RGB 浮点张量、峰值 1、包含边界的全部像素；只有显示用 PNG 裁剪到 `[0,1]`。
 
-为避免 Adreno 驱动对长 GPU 任务的超时重置，DnCNN 通过 `Engine(model_path, 8)` 每 8 个算子提交一次，两端采用相同的 5 段划分。普通推理与 benchmark 共用相同划分；其余模型默认仍整图提交。ONNX 单元测试覆盖跨提交残差依赖、非整除分段、重复推理和 GPU 时间戳，提交失败会抛出异常。
+DnCNN 在分块卷积和 ReLU 融合优化后，已通过 macOS 和 Android 的整图单次提交验证，与其余模型统一使用 `Engine(model_path)`。普通推理与 benchmark 均整图一次提交。Engine 仍支持通过第二个参数限制每次提交的算子数；ONNX 单元测试覆盖跨提交残差依赖、非整除分段、重复推理和 GPU 时间戳，提交失败会抛出异常。
 
 ## 准备模型
 
@@ -62,7 +62,7 @@ uv pip install --python .venv/bin/python -r python/models/requirements-yolo.txt
 
 导出时比较 PyTorch 与 ONNX Runtime；运行模型测试时，由 C++ 逐元素比较 Vulkan 与 PyTorch，容差为 `atol=rtol=1e-3`。分类要求 top-5 索引及顺序一致；U-Net 要求前景/背景均存在且与 PyTorch mask 的 Dice ≥0.999；YOLO 要求类别、框数及顺序与参考一致，置信度差 <1e-4、框 IoU >0.999，且样例包含人和公交车。失败会返回非零退出码。
 
-DnCNN 在同样的逐元素校验之外，还读取独立的 `clean.bin`，要求相对噪声输入的 PSNR 提升至少 3 dB，防止原样输出噪声图也被当作通过。单元测试覆盖 PSNR 数值、原样输出、质量退化、尺寸不符以及非有限值。导出器另保存 `clean.png`、`noisy.png`、`reference.png`。两端的运行结果与计时见 [DnCNN 运行报告](DNCNN_REPORT.md)。
+DnCNN 在同样的逐元素校验之外，还读取独立的 `clean.bin`，要求相对噪声输入的 PSNR 提升至少 3 dB，防止原样输出噪声图也被当作通过。单元测试覆盖 PSNR 数值、原样输出、质量退化、尺寸不符以及非有限值。导出器另保存 `clean.png`、`noisy.png`、`reference.png`。
 
 LR-ASPP 固定使用 Torchvision 0.23.0 的预训练模型，导出时融合 Conv / BN 并通过 onnxslim 折叠形状计算，保留完整网络的双线性上采样。新增原生 `HardSigmoid` 支持 ONNX 的 alpha/beta（缺省为 0.2/0.5）；opset 13 的 Hardswish 由 `HardSigmoid(alpha=1/6) + Mul` 执行。ONNX `Resize(mode=linear, coordinate_transformation_mode=half_pixel)` 连接已有 BilinearResize2D 层，其他坐标模式明确拒绝。
 
@@ -162,7 +162,7 @@ YOLO 标注图已经由 C++ 自动生成。测试通过后，也可单独运行 
 
 ## 纯网络 GPU inference 计时
 
-各网络的 C++ 测试入口通过 `--benchmark` 调用 `BenchmarkGraph()`，在每段提交的首尾写入 GPU timestamp，并将各段耗时相加，覆盖全部内部算子、同步和 Reshape / Identity 拷贝。DnCNN 为 5 段，其余模型为 1 段；计时排除模型初始化、CPU 提交、输入上传、输出下载、分段间的主机等待间隙及预后处理。输入上传一次，各段命令记录一次；batch=1、FP32，预热 5 次后串行测量 30 次，结束后仍核验输出。报告中的 `submissions_per_run` 记录每次推理的提交次数。
+各网络的 C++ 测试入口通过 `--benchmark` 调用 `BenchmarkGraph()`，在整图提交的首尾写入 GPU timestamp，覆盖全部内部算子、同步和 Reshape / Identity 拷贝。七个模型均整图一次提交；计时排除模型初始化、CPU 提交、输入上传、输出下载及预后处理。输入上传一次，命令记录一次；batch=1、FP32，预热 5 次后串行测量 30 次，结束后仍核验输出。报告中的 `submissions_per_run` 记录每次推理的提交次数。
 
 2026-10-21 的测量记录：
 
