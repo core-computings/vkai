@@ -232,6 +232,82 @@ TEST(ONNXExecutionTest, ConstantReshapeAndSoftmax) {
   Model::Int(softmax, "axis", 1);
   model.Check({0, 0}, {.5F, .5F});
 }
+TEST(ONNXExecutionTest, LegacySoftmaxFlattensDimensionsStartingAtAxis) {
+  for (int version : {1, 11, 12}) {
+    SCOPED_TRACE(version);
+    Model model({2, 2, 2, 2}, {2, 2, 2, 2});
+    model.Proto().mutable_opset_import(0)->set_version(version);
+    auto* node = model.Node("Softmax", {"input"});
+    Model::Int(node, "axis", 1);
+    model.Check(std::vector<float>(16, 0.F), std::vector<float>(16, .125F));
+  }
+}
+
+TEST(ONNXExecutionTest, SoftmaxDefaultAxisDependsOnOpset) {
+  for (int version : {11, 12, 13, 21}) {
+    SCOPED_TRACE(version);
+    Model model({2, 2, 2, 4}, {2, 2, 2, 4});
+    model.Proto().mutable_opset_import(0)->set_version(version);
+    model.Node("Softmax", {"input"});
+    model.Check(std::vector<float>(32, 0.F),
+                std::vector<float>(32, version < 13 ? 1.F / 16 : 1.F / 4));
+  }
+}
+
+TEST(ONNXExecutionTest, SoftmaxReducesSpecifiedAxisAcrossRanksAndOpsets) {
+  const std::vector<std::vector<int64_t>> shapes{
+      {5}, {2, 3}, {2, 3, 4}, {2, 3, 2, 5}, {1, 2, 3, 2, 1}};
+  for (int version : {11, 13}) {
+    for (const auto& shape : shapes) {
+      const int rank = static_cast<int>(shape.size());
+      for (int axis = 0; axis < rank; ++axis) {
+        SCOPED_TRACE(::testing::Message()
+                     << "opset=" << version << " rank=" << rank << " axis=" << axis);
+        int count = 1, trailing = 1;
+        for (int i = 0; i < rank; ++i) {
+          count *= shape[i];
+          if (i > axis) trailing *= shape[i];
+        }
+        const auto input = vkai::test::TestValues(count, 100.F);
+        std::vector<float> expected(count);
+        // Group coordinates directly by ONNX's reduction rule. Use double
+        // precision and recompute the denominator independently for each output.
+        for (int i = 0; i < count; ++i) {
+          const int reduced = version < 13 ? shape[axis] * trailing : shape[axis];
+          const int stride = version < 13 ? 1 : trailing;
+          const int base = i - ((i / stride) % reduced) * stride;
+          double maximum = -std::numeric_limits<double>::infinity();
+          for (int j = 0; j < reduced; ++j)
+            maximum = std::max(maximum, double(input[base + j * stride]));
+          double sum = 0;
+          for (int j = 0; j < reduced; ++j)
+            sum += std::exp(double(input[base + j * stride]) - maximum);
+          expected[i] = std::exp(double(input[i]) - maximum) / sum;
+        }
+        Model model(shape, shape);
+        model.Proto().mutable_opset_import(0)->set_version(version);
+        auto* node = model.Node("Softmax", {"input"}, "probabilities");
+        Model::Int(node, "axis", axis - rank);
+        // Exercise the probabilities in a downstream layer and memory planning.
+        model.Node("Add", {"probabilities", "input"});
+        for (int i = 0; i < count; ++i) expected[i] += input[i];
+        model.Check(input, expected);
+      }
+    }
+  }
+}
+
+TEST(ONNXExecutionTest, SoftmaxRejectsAxisOutsideTensorRank) {
+  for (int version : {11, 13}) {
+    for (int axis : {-4, 3}) {
+      Model model({2, 3, 4}, {2, 3, 4});
+      model.Proto().mutable_opset_import(0)->set_version(version);
+      auto* node = model.Node("Softmax", {"input"});
+      Model::Int(node, "axis", axis);
+      EXPECT_THROW(vkai::Engine(model.Save()), std::runtime_error);
+    }
+  }
+}
 TEST(ONNXExecutionTest, FloatConstantsContainActualData) {
   Model model({1, 2}, {1, 2});
   auto* constant = model.Node("Constant", {}, "offset");

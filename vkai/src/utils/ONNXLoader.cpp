@@ -324,6 +324,14 @@ Graph BuildGraphFromONNX(const std::string& filename) {
     for (const auto& attribute : node.attribute()) {
       ImportAttribute(attribute, *operation, outputs);
     }
+    if (*type == OpType::Softmax) {
+      int64_t version = 0;
+      for (const auto& import : model.opset_import()) {
+        if (import.domain().empty() || import.domain() == "ai.onnx") version = import.version();
+      }
+      if (version <= 0) throw std::runtime_error("Softmax requires an ONNX opset import");
+      operation->SetAttribute("onnx_opset", version);
+    }
     if (node.op_type() == "Identity" && operation->GetInput("input")->HasData()) {
       const auto source = operation->GetInput("input");
       if (source->HasInt64Data())
