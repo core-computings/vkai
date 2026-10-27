@@ -53,6 +53,9 @@ class Engine {
 
   // Call PopulateTensor() on graph input tensors first. Executes synchronously and
   // stores results in graph output tensor Data(). Dynamic batch defaults to 1.
+  // Records commands lazily and reuses them until BenchmarkGraph records its
+  // instrumented commands. The next ExecuteGraph then records again. Layer
+  // descriptors and graph storage must not be rebound externally between calls.
   void ExecuteGraph();
 
   // Uploads inputs once and reuses a recorded command buffer. GPU timestamps
@@ -66,6 +69,8 @@ class Engine {
   void FindConvReluFusions();
 
   void RecordOperations(VkCommandBuffer command, size_t first, size_t count);
+
+  void RecordExecutionCommands();
 
   void AllocateVulkanBuffers(const MemoryPlan& plan);
 
@@ -91,6 +96,10 @@ class Engine {
   size_t operations_per_submission_;
 
   std::unordered_map<std::string, std::unique_ptr<Layer>> layers_;
+
+  // Destroy completed commands before their descriptors, buffers and context.
+  std::unique_ptr<core::vulkan::VulkanFence> execution_fence_;
+  std::vector<core::vulkan::VulkanCommandBuffer> execution_commands_;
 };
 
 }  // namespace vkai
