@@ -125,13 +125,13 @@ void Engine::RecordOperations(VkCommandBuffer command, size_t first, size_t coun
   }
 }
 
-void Engine::ExecuteGraph() {
-  UploadInputs();
-  core::vulkan::VulkanFence fence(context_.get());
+void Engine::RecordExecutionCommands() {
+  std::vector<core::vulkan::VulkanCommandBuffer> commands;
   size_t first = 0;
   do {
     const size_t count = std::min(operations_per_submission_, execution_order_.size() - first);
-    auto command = core::vulkan::VulkanCommandBuffer::BeginOneTimeCommands(context_.get());
+    auto& command = commands.emplace_back(context_.get());
+    command.BeginCommandBuffer();
     RecordOperations(command.buffer(), first, count);
     first += count;
     if (first == execution_order_.size()) {
@@ -140,16 +140,27 @@ void Engine::ExecuteGraph() {
     }
     if (vkEndCommandBuffer(command.buffer()) != VK_SUCCESS)
       throw std::runtime_error("Cannot record graph command buffer");
+  } while (first < execution_order_.size());
+  if (!execution_fence_)
+    execution_fence_ = std::make_unique<core::vulkan::VulkanFence>(context_.get());
+  execution_commands_ = std::move(commands);
+}
+
+void Engine::ExecuteGraph() {
+  UploadInputs();
+  if (execution_commands_.empty()) RecordExecutionCommands();
+  for (const auto& command : execution_commands_) {
     const VkCommandBuffer raw_command = command.buffer();
     const VkSubmitInfo submit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                               .commandBufferCount = 1,
                               .pCommandBuffers = &raw_command};
-    fence.Reset();
-    if (vkQueueSubmit(context_->compute_queue(), 1, &submit, fence.fence) != VK_SUCCESS ||
-        vkWaitForFences(context_->logical_device, 1, &fence.fence, VK_TRUE, UINT64_MAX) !=
-            VK_SUCCESS)
+    execution_fence_->Reset();
+    if (vkQueueSubmit(context_->compute_queue(), 1, &submit, execution_fence_->fence) !=
+            VK_SUCCESS ||
+        vkWaitForFences(context_->logical_device, 1, &execution_fence_->fence, VK_TRUE,
+                        UINT64_MAX) != VK_SUCCESS)
       throw std::runtime_error("GPU graph submission failed");
-  } while (first < execution_order_.size());
+  }
   CopyOutputs();
 }
 
@@ -196,6 +207,9 @@ InferenceBenchmark Engine::BenchmarkGraph(int warmup_runs, int measured_runs) {
   if (vkCreateQueryPool(query.device, &query_info, nullptr, &query.handle) != VK_SUCCESS) {
     throw std::runtime_error("Cannot create GPU timestamp query pool");
   }
+  // Recording layers updates descriptor sets and invalidates commands that
+  // previously bound them, even when the buffer handles have not changed.
+  execution_commands_.clear();
   std::vector<core::vulkan::VulkanCommandBuffer> commands;
   commands.reserve(submissions);
   size_t first = 0;

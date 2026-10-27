@@ -1,5 +1,6 @@
 #include <dlfcn.h>
 
+#include <atomic>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -8,6 +9,19 @@
 #include "utils/TensorUtils.h"
 
 namespace {
+
+struct CommandTracker {
+  std::atomic<size_t> pool_calls{0};
+  std::atomic<size_t> live_pools{0};
+  std::atomic<size_t> record_calls{0};
+  std::atomic<size_t> fence_calls{0};
+  std::atomic<size_t> live_fences{0};
+};
+
+CommandTracker& Commands() {
+  static CommandTracker tracker;
+  return tracker;
+}
 
 struct TrackedBuffer {
   VkDeviceSize capacity = 0;
@@ -180,6 +194,52 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory(VkDevice device, Vk
   return result;
 }
 
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL
+vkCreateCommandPool(VkDevice device, const VkCommandPoolCreateInfo* info,
+                    const VkAllocationCallbacks* allocator, VkCommandPool* pool) {
+  static const auto create = VulkanFunction<PFN_vkCreateCommandPool>("vkCreateCommandPool");
+  const auto result = create(device, info, allocator, pool);
+  if (result == VK_SUCCESS) {
+    ++Commands().pool_calls;
+    ++Commands().live_pools;
+  }
+  return result;
+}
+
+extern "C" VKAPI_ATTR void VKAPI_CALL vkDestroyCommandPool(VkDevice device, VkCommandPool pool,
+                                                           const VkAllocationCallbacks* allocator) {
+  static const auto destroy = VulkanFunction<PFN_vkDestroyCommandPool>("vkDestroyCommandPool");
+  if (pool != VK_NULL_HANDLE) --Commands().live_pools;
+  destroy(device, pool, allocator);
+}
+
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL
+vkBeginCommandBuffer(VkCommandBuffer command, const VkCommandBufferBeginInfo* info) {
+  static const auto begin = VulkanFunction<PFN_vkBeginCommandBuffer>("vkBeginCommandBuffer");
+  ++Commands().record_calls;
+  return begin(command, info);
+}
+
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateFence(VkDevice device,
+                                                        const VkFenceCreateInfo* info,
+                                                        const VkAllocationCallbacks* allocator,
+                                                        VkFence* fence) {
+  static const auto create = VulkanFunction<PFN_vkCreateFence>("vkCreateFence");
+  const auto result = create(device, info, allocator, fence);
+  if (result == VK_SUCCESS) {
+    ++Commands().fence_calls;
+    ++Commands().live_fences;
+  }
+  return result;
+}
+
+extern "C" VKAPI_ATTR void VKAPI_CALL vkDestroyFence(VkDevice device, VkFence fence,
+                                                     const VkAllocationCallbacks* allocator) {
+  static const auto destroy = VulkanFunction<PFN_vkDestroyFence>("vkDestroyFence");
+  if (fence != VK_NULL_HANDLE) --Commands().live_fences;
+  destroy(device, fence, allocator);
+}
+
 int main(int argc, char** argv) {
   if (argc != 8) {
     std::cerr << "Usage: vkai_memory_benchmark MODEL INPUT REFERENCE OPS_PER_SUBMISSION "
@@ -202,11 +262,23 @@ int main(int argc, char** argv) {
     engine.GetInputTensor()->PopulateTensor(input);
     const auto gpu = engine.BenchmarkGraph(warmup, runs);
     model_test::CompareOutput(engine.GetOutputTensor()->Data(), reference);
+    const double first_execute_ms = model_test::RunInference(engine);
+    model_test::CompareOutput(engine.GetOutputTensor()->Data(), reference);
+    for (int i = 0; i < warmup; ++i) {
+      engine.ExecuteGraph();
+      model_test::CompareOutput(engine.GetOutputTensor()->Data(), reference);
+    }
+    const size_t pools_before = Commands().pool_calls;
+    const size_t records_before = Commands().record_calls;
+    const size_t fences_before = Commands().fence_calls;
     std::vector<double> e2e_ms;
     for (int i = 0; i < e2e_runs; ++i) {
       e2e_ms.push_back(model_test::RunInference(engine));
       model_test::CompareOutput(engine.GetOutputTensor()->Data(), reference);
     }
+    const size_t e2e_pool_calls = Commands().pool_calls - pools_before;
+    const size_t e2e_record_calls = Commands().record_calls - records_before;
+    const size_t e2e_fence_calls = Commands().fence_calls - fences_before;
     const auto final = ReadSnapshot(engine);
     if (initialized.allocation_calls != final.allocation_calls)
       throw std::runtime_error("Inference allocated additional Vulkan memory");
@@ -233,11 +305,21 @@ int main(int argc, char** argv) {
               << ",\"buffer_creation_calls\":" << final.buffer_calls
               << ",\"submissions_per_run\":" << gpu.submissions_per_run
               << ",\"warmup_runs\":" << warmup << ",\"mismatches\":0";
+    std::cout << ",\"first_execute_ms\":" << first_execute_ms << ",\"e2e_runs\":" << e2e_runs
+              << ",\"e2e_command_pool_creations\":" << e2e_pool_calls
+              << ",\"e2e_command_recordings\":" << e2e_record_calls
+              << ",\"e2e_fence_creations\":" << e2e_fence_calls
+              << ",\"live_command_pools\":" << Commands().live_pools
+              << ",\"live_fences\":" << Commands().live_fences;
     WriteSamples("gpu_ms", gpu.gpu_ms);
     WriteSamples("e2e_ms", e2e_ms);
   }
   const auto& tracker = Tracker();
   if (tracker.live_bytes != 0 || !tracker.buffers.empty() || !tracker.allocations.empty())
     throw std::runtime_error("Engine destruction leaked Vulkan memory");
-  std::cout << ",\"allocated_bytes_after_destruction\":0}\n";
+  if (Commands().live_pools != 0 || Commands().live_fences != 0)
+    throw std::runtime_error("Engine destruction leaked command pools or fences");
+  std::cout
+      << ",\"allocated_bytes_after_destruction\":0,\"live_command_pools_after_destruction\":0,"
+         "\"live_fences_after_destruction\":0}\n";
 }

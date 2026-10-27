@@ -226,4 +226,72 @@ TEST(EngineTest, StandaloneReshapeCopiesLogicalBytesFromLargerStorage) {
   Reshape too_large(&context, 5 * sizeof(float));
   EXPECT_THROW(too_large.Execute(VK_NULL_HANDLE, input, output), std::invalid_argument);
 }
+TEST(EngineTest, ReusesCommandsWithChangingInputsAcrossBenchmarkAndSubmissionBoundaries) {
+  TestModel model({1, 4}, {1, 4});
+  TestModel::Value(model.Proto().mutable_graph()->add_input(), "other", {1, 4});
+  model.Node("Relu", {"input"}, "positive");
+  model.Node("Add", {"positive", "other"}, "sum");
+  model.Node("Sigmoid", {"sum"}, "probability");
+  model.Node("Add", {"probability", "input"}, "residual");
+  model.Node("Identity", {"residual"});
+  TestModel::Value(model.Proto().mutable_graph()->add_output(), "positive", {1, 4});
+  for (const size_t chunk : {size_t{1}, size_t{3}, std::numeric_limits<size_t>::max()}) {
+    Engine engine(model.Save(), chunk);
+    const auto other = engine.GetGraph().Inputs().at(1);
+    for (int cycle = 0; cycle < 3; ++cycle) {
+      for (int iteration = 0; iteration < 4; ++iteration) {
+        const auto input = TestValues(4, .5F, cycle * 4 + iteration);
+        const auto rhs = TestValues(4, .25F, cycle + iteration * 3);
+        std::vector<float> expected(4), positive(4);
+        for (size_t i = 0; i < input.size(); ++i) {
+          positive[i] = std::max(input[i], 0.F);
+          expected[i] = input[i] + 1.F / (1.F + std::exp(-positive[i] - rhs[i]));
+        }
+        engine.GetInputTensor()->PopulateTensor(input);
+        other->PopulateTensor(rhs);
+        engine.ExecuteGraph();
+        ExpectNear(engine.GetOutputTensor()->Data(), expected);
+        ExpectNear(engine.GetGraph().Outputs().at(1)->Data(), positive);
+        if (iteration == 3) {
+          const auto benchmark = engine.BenchmarkGraph(1, 2);
+          EXPECT_EQ(benchmark.submissions_per_run, chunk == 1 ? 4U : chunk == 3 ? 2U : 1U);
+          ExpectNear(engine.GetOutputTensor()->Data(), expected);
+        }
+      }
+    }
+  }
+}
+
+TEST(EngineTest, RejectsInvalidInputsAndBenchmarkCountsWithoutBreakingCachedExecution) {
+  TestModel model({1, 2}, {1, 2});
+  model.Node("Relu", {"input"});
+  Engine engine(model.Save());
+  engine.GetInputTensor()->PopulateTensor({-1, 2});
+  engine.ExecuteGraph();
+  engine.GetInputTensor()->PopulateTensor({3});
+  EXPECT_THROW(engine.ExecuteGraph(), std::runtime_error);
+  EXPECT_THROW(engine.BenchmarkGraph(-1, 2), std::invalid_argument);
+  EXPECT_THROW(engine.BenchmarkGraph(1, 0), std::invalid_argument);
+  engine.GetInputTensor()->PopulateTensor({4, -5});
+  engine.ExecuteGraph();
+  EXPECT_EQ(engine.GetOutputTensor()->Data(), (std::vector<float>{4, 0}));
+}
+
+TEST(EngineTest, ReusesEmptyDispatchGraphAfterBenchmarkAndInputUpdates) {
+  TestModel model({1, 2}, {1, 2});
+  model.Node("Identity", {"input"});
+  Engine engine(model.Save(), 1);
+  for (int cycle = 0; cycle < 3; ++cycle) {
+    for (int iteration = 0; iteration < 3; ++iteration) {
+      const std::vector<float> input{float(cycle), float(-iteration)};
+      engine.GetInputTensor()->PopulateTensor(input);
+      engine.ExecuteGraph();
+      EXPECT_EQ(engine.GetOutputTensor()->Data(), input);
+    }
+    const auto benchmark = engine.BenchmarkGraph(0, 2);
+    EXPECT_EQ(benchmark.submissions_per_run, 1U);
+    EXPECT_EQ(engine.GetOutputTensor()->Data(), engine.GetInputTensor()->Data());
+  }
+}
+
 }  // namespace vkai::test
