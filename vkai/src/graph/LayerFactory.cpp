@@ -374,14 +374,31 @@ std::unique_ptr<Layer> CreateLayer(core::vulkan::VulkanContext* context, const O
       break;
     }
     case OpType::Softmax: {
-      const auto axis = Attribute<int64_t>(op, "axis", -1);
+      const auto version = Attribute<int64_t>(op, "onnx_opset", 13);
+      const bool legacy = version < 13;
+      const int64_t rank = static_cast<int64_t>(s.size());
+      auto axis = Attribute<int64_t>(op, "axis", legacy ? 1 : -1);
       Require(s == out, op, "Softmax shape mismatch");
-      if (s.size() == 2 && (axis == 1 || axis == -1)) {
-        layer = std::make_unique<Softmax>(context, s[1], s[0]);
+      Require(rank > 0 && axis >= (version < 11 ? 0 : -rank) && axis < rank, op,
+              "Softmax axis is outside tensor rank");
+      if (axis < 0) axis += rank;
+      ElementCount(s);
+      int outer = 1, reduced = 1, inner = 1;
+      for (int64_t i = 0; i < rank; ++i) {
+        if (i < axis)
+          outer *= s[i];
+        else if (i == axis || legacy)
+          reduced *= s[i];
+        else
+          inner *= s[i];
+      }
+      // Old ONNX Softmax flattens axis..rank into one contiguous vector.
+      // New schemas reduce only axis, retaining all trailing coordinates.
+      if (inner == 1) {
+        layer = std::make_unique<Softmax>(context, reduced, outer);
       } else {
-        Require(s.size() == 4 && (axis == 1 || axis == -3), op, "Unsupported Softmax axis");
         layer =
-            std::make_unique<Softmax>(context, s[1], s[2], s[3], s[0], SoftmaxMode::kChannelNCHW);
+            std::make_unique<Softmax>(context, reduced, inner, 1, outer, SoftmaxMode::kChannelNCHW);
       }
       break;
     }
