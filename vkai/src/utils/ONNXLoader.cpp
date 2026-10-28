@@ -3,8 +3,11 @@
 #include <onnx/onnx_pb.h>
 #include <onnx/shape_inference/implementation.h>
 
+#include <charconv>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
@@ -16,6 +19,71 @@
 
 namespace vkai {
 namespace {
+
+void LoadExternalTensor(onnx::TensorProto& tensor, const std::filesystem::path& directory) {
+  if (tensor.data_location() != onnx::TensorProto::EXTERNAL) return;
+  const auto fail = [&](const std::string& reason) {
+    throw std::runtime_error("External ONNX tensor '" + tensor.name() + "': " + reason);
+  };
+  std::unordered_map<std::string, std::string> metadata;
+  for (const auto& entry : tensor.external_data())
+    if (!metadata.emplace(entry.key(), entry.value()).second) fail("duplicate metadata key");
+  const std::filesystem::path location(metadata["location"]);
+  if (location.empty() || location.is_absolute() || location.has_root_name() ||
+      location.string().find('\0') != std::string::npos)
+    fail("location must be a relative file path");
+  for (const auto& part : location)
+    if (part == "..") fail("location must stay inside the model directory");
+  std::error_code error;
+  const auto path = std::filesystem::canonical(directory / location, error);
+  if (error) fail("cannot resolve file: " + location.string());
+  const auto relative = path.lexically_relative(directory);
+  if (relative.empty() || *relative.begin() == ".." ||
+      !std::filesystem::is_regular_file(path, error) || error)
+    fail("location must be a file inside the model directory");
+
+  const auto number = [&](const std::string& key, uint64_t fallback) {
+    const auto entry = metadata.find(key);
+    if (entry == metadata.end()) return fallback;
+    uint64_t value = 0;
+    const auto& text = entry->second;
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (result.ec != std::errc{} || result.ptr != text.data() + text.size()) fail("invalid " + key);
+    return value;
+  };
+  const uint64_t width = tensor.data_type() == onnx::TensorProto::FLOAT   ? sizeof(float)
+                         : tensor.data_type() == onnx::TensorProto::INT64 ? sizeof(int64_t)
+                                                                          : 0;
+  if (width == 0) fail("only float32 and int64 data are supported");
+  uint64_t bytes = width;
+  for (const auto dimension : tensor.dims()) {
+    if (dimension < 0 ||
+        (dimension != 0 &&
+         bytes > uint64_t(std::numeric_limits<std::streamsize>::max()) / uint64_t(dimension)))
+      fail("invalid or oversized dimensions");
+    bytes *= static_cast<uint64_t>(dimension);
+  }
+  const auto file_size = std::filesystem::file_size(path, error);
+  if (error) fail("cannot determine file size");
+  const auto offset = number("offset", 0);
+  if (offset > file_size) fail("offset is beyond end of file");
+  const auto length = number("length", file_size - offset);
+  if (length != bytes || length > file_size - offset ||
+      offset > uint64_t(std::numeric_limits<std::streamoff>::max()))
+    fail("file range does not match tensor dimensions");
+  std::ifstream stream(path, std::ios::binary);
+  stream.seekg(static_cast<std::streamoff>(offset));
+  std::string data(static_cast<size_t>(bytes), '\0');
+  if (!stream.read(data.data(), static_cast<std::streamsize>(bytes)))
+    fail("cannot read complete tensor data");
+  // External storage takes precedence over any embedded payload. Materialize it
+  // before inference so ONNX can also read external int64 shape constants.
+  tensor.set_raw_data(std::move(data));
+  tensor.clear_float_data();
+  tensor.clear_int64_data();
+  tensor.clear_external_data();
+  tensor.set_data_location(onnx::TensorProto::DEFAULT);
+}
 
 std::vector<int64_t> ShapeFromValueInfo(const onnx::ValueInfoProto& value_info) {
   std::vector<int64_t> shape;
@@ -209,6 +277,13 @@ Graph BuildGraphFromONNX(const std::string& filename) {
   if (!model.ParseFromIstream(&input) || !model.has_graph()) {
     throw std::runtime_error("Failed to parse ONNX ModelProto: " + filename);
   }
+  const auto directory =
+      std::filesystem::canonical(std::filesystem::absolute(filename).parent_path());
+  for (auto& tensor : *model.mutable_graph()->mutable_initializer())
+    LoadExternalTensor(tensor, directory);
+  for (auto& node : *model.mutable_graph()->mutable_node())
+    for (auto& attribute : *node.mutable_attribute())
+      if (attribute.has_t()) LoadExternalTensor(*attribute.mutable_t(), directory);
   try {
     onnx::shape_inference::InferShapes(model);
   } catch (const std::exception& exception) {
