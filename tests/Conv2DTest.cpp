@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include "TestUtils.h"
 #include "layers/Conv2D.h"
 
@@ -5,10 +7,12 @@ namespace vkai::test {
 using Conv2DTest = GpuTest;
 
 void CheckConvolution(core::vulkan::VulkanContext& context, int batch, int ic, int oc, int h, int w,
-                      int kh, int kw, int pad, int dilation, bool bias) {
-  const int oh = h + 2 * pad - dilation * (kh - 1), ow = w + 2 * pad - dilation * (kw - 1);
+                      int kh, int kw, int pad, int dilation, bool bias, int stride = 1,
+                      int groups = 1, bool fuse_relu = false) {
+  const int oh = (h + 2 * pad - dilation * (kh - 1) - 1) / stride + 1;
+  const int ow = (w + 2 * pad - dilation * (kw - 1) - 1) / stride + 1;
   const auto input = TestValues(batch * ic * h * w);
-  const auto weights = TestValues(oc * ic * kh * kw, .0625F, 4);
+  const auto weights = TestValues(oc * (ic / groups) * kh * kw, .0625F, 4);
   const auto offsets = bias ? TestValues(oc, .5F, 9) : std::vector<float>{};
   std::vector<float> expected(batch * oc * oh * ow);
   for (int n = 0; n < batch; ++n)
@@ -16,18 +20,20 @@ void CheckConvolution(core::vulkan::VulkanContext& context, int batch, int ic, i
       for (int y = 0; y < oh; ++y)
         for (int x = 0; x < ow; ++x) {
           double value = bias ? offsets[out] : 0;
-          for (int in = 0; in < ic; ++in)
+          for (int in = 0; in < ic / groups; ++in)
             for (int ky = 0; ky < kh; ++ky)
               for (int kx = 0; kx < kw; ++kx) {
-                const int iy = y - pad + ky * dilation, ix = x - pad + kx * dilation;
+                const int iy = y * stride - pad + ky * dilation;
+                const int ix = x * stride - pad + kx * dilation;
+                const int channel = (out / (oc / groups)) * (ic / groups) + in;
                 if (iy >= 0 && iy < h && ix >= 0 && ix < w)
-                  value += double(input[((n * ic + in) * h + iy) * w + ix]) *
-                           weights[((out * ic + in) * kh + ky) * kw + kx];
+                  value += double(input[((n * ic + channel) * h + iy) * w + ix]) *
+                           weights[((out * (ic / groups) + in) * kh + ky) * kw + kx];
               }
-          expected[((n * oc + out) * oh + y) * ow + x] = value;
+          expected[((n * oc + out) * oh + y) * ow + x] = fuse_relu ? std::max(value, 0.0) : value;
         }
-  Conv2D layer(&context, ic, oc, h, w, kh, kw, 1, 1, pad, pad, PaddingType::Zero, batch, dilation,
-               dilation);
+  Conv2D layer(&context, ic, oc, h, w, kh, kw, stride, stride, pad, pad, PaddingType::Zero, batch,
+               dilation, dilation, groups, fuse_relu);
   layer.MapWeights(weights, offsets);
   EXPECT_EQ(layer.OutputHeight(), oh);
   EXPECT_EQ(layer.OutputWidth(), ow);
@@ -54,6 +60,23 @@ TEST_F(Conv2DTest, MatchesDilatedConvolutionWithCpuReference) {
 }
 TEST_F(Conv2DTest, AppliesBiasInPointwiseConvolution) {
   CheckConvolution(context, 2, 5, 3, 7, 11, 1, 1, 0, 1, true);
+}
+TEST_F(Conv2DTest, PointwiseTilesHandleChannelReductionAndSpatialTailsAcrossBatches) {
+  CheckConvolution(context, 2, 17, 19, 7, 11, 1, 1, 0, 1, true);
+}
+TEST_F(Conv2DTest, PointwiseTilesHandleMinimumShapeWithoutBias) {
+  CheckConvolution(context, 1, 16, 16, 8, 8, 1, 1, 0, 1, false);
+}
+TEST_F(Conv2DTest, PointwiseTilesApplyFusedReluAfterBias) {
+  CheckConvolution(context, 2, 33, 35, 7, 11, 1, 1, 0, 1, true, 1, 1, true);
+}
+TEST_F(Conv2DTest, PointwiseFallbacksPreserveSmallStridedPaddedAndGroupedConvolutions) {
+  CheckConvolution(context, 1, 15, 19, 7, 11, 1, 1, 0, 1, true);
+  CheckConvolution(context, 1, 17, 15, 7, 11, 1, 1, 0, 1, true);
+  CheckConvolution(context, 1, 17, 19, 7, 9, 1, 1, 0, 1, true);
+  CheckConvolution(context, 2, 17, 19, 9, 11, 1, 1, 0, 1, true, 2);
+  CheckConvolution(context, 1, 17, 19, 7, 11, 1, 1, 1, 1, true);
+  CheckConvolution(context, 2, 32, 34, 7, 11, 1, 1, 0, 1, true, 1, 2);
 }
 TEST_F(Conv2DTest, TiledConvolutionHandlesPartialTilesAndBatches) {
   // Nonmultiples of K=16, channels=16 and spatial=32 exercise all tile tails;
