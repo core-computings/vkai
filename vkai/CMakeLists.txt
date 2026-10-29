@@ -8,7 +8,7 @@ file(GLOB_RECURSE vkai_SRC CONFIGURE_DEPENDS "src/*.cpp")
 
 add_library(vkai ${vkai_SRC})
 
-option(VKAI_ENABLE_TILED_CONV "Use the tiled FP32 3x3 convolution kernel" ON)
+option(VKAI_ENABLE_TILED_CONV "Use the tiled FP32 3x3 and 1x1 convolution kernels" ON)
 if(VKAI_ENABLE_TILED_CONV)
     target_compile_definitions(vkai PRIVATE VKAI_ENABLE_TILED_CONV)
 endif()

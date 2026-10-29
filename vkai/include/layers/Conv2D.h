@@ -71,6 +71,7 @@ class Conv2D : public Layer {
   bool valid_ = false;
   bool weights_mapped_ = false;
   bool use_tiled_ = false;
+  bool use_pointwise_ = false;
 };
 
 }  // namespace vkai

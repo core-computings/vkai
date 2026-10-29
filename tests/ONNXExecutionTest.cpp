@@ -31,6 +31,39 @@ TEST(ONNXExecutionTest, ConvImportsStridesPaddingAndDilation) {
   Model::Ints(node, "dilations", {1, 1});
   model.Check({1, 2, 3, 4, 5, 6, 7, 8, 9}, {4.5F, 18.5F, 36.5F, 77.5F});
 }
+TEST(ONNXExecutionTest, PointwiseConvReluResidualPreservesChangedInputsAndBenchmarkTransitions) {
+  constexpr int batch = 2, ic = 17, oc = 19, h = 7, w = 11, spatial = h * w;
+  Model model({batch, ic, h, w}, {batch, oc, h, w});
+  const auto weights = vkai::test::TestValues(oc * ic, .0625F, 4);
+  const auto bias = vkai::test::TestValues(oc, .5F, 9);
+  model.Weight("weights", {oc, ic, 1, 1}, weights);
+  model.Weight("bias", {oc}, bias);
+  model.Weight("residual", {}, {.25F});
+  model.Node("Conv", {"input", "weights", "bias"}, "conv");
+  model.Node("Relu", {"conv"}, "relu");
+  model.Node("Add", {"relu", "residual"});
+  vkai::Engine engine(model.Save());
+  for (int iteration = 0; iteration < 3; ++iteration) {
+    const auto input = vkai::test::TestValues(batch * ic * spatial, .125F, iteration * 7);
+    std::vector<float> expected(batch * oc * spatial);
+    for (int n = 0; n < batch; ++n)
+      for (int out = 0; out < oc; ++out)
+        for (int pos = 0; pos < spatial; ++pos) {
+          double value = bias[out];
+          for (int in = 0; in < ic; ++in)
+            value += double(input[(n * ic + in) * spatial + pos]) * weights[out * ic + in];
+          expected[(n * oc + out) * spatial + pos] = std::max(value, 0.0) + .25;
+        }
+    engine.GetInputTensor()->PopulateTensor(input);
+    engine.ExecuteGraph();
+    vkai::test::ExpectNear(engine.GetOutputTensor()->Data(), expected);
+    if (iteration == 1) {
+      const auto benchmark = engine.BenchmarkGraph(1, 2);
+      EXPECT_EQ(benchmark.gpu_ms.size(), 2U);
+      vkai::test::ExpectNear(engine.GetOutputTensor()->Data(), expected);
+    }
+  }
+}
 TEST(ONNXExecutionTest, BatchNormalizationUsesRunningStatisticsAndEpsilon) {
   Model model({2, 1, 1, 2}, {2, 1, 1, 2});
   model.Weight("scale", {1}, {2});

@@ -90,6 +90,10 @@ Conv2D::Conv2D(core::vulkan::VulkanContext* context, int input_channels, int out
                padding_width == 1 && padding_type == PaddingType::Zero && groups == 1 &&
                input_channels >= 16 && output_channels >= 16 &&
                static_cast<int64_t>(input_height) * input_width >= 64;
+  use_pointwise_ = kernel_height == 1 && kernel_width == 1 && stride_height == 1 &&
+                   stride_width == 1 && padding_height == 0 && padding_width == 0 && groups == 1 &&
+                   input_channels >= 16 && output_channels >= 16 &&
+                   static_cast<int64_t>(input_height) * input_width >= 64;
 #endif
 
   uniform_buffer_.MapData(
@@ -167,7 +171,7 @@ void Conv2D::Execute(const VkCommandBuffer& command_buffer,
   vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1,
                           &descriptor_set_, 0, nullptr);
 
-  if (use_tiled_) {
+  if (use_tiled_ || use_pointwise_) {
     const uint32_t spatial =
         static_cast<uint32_t>(uniform_data_.output_height) * uniform_data_.output_width;
     vkCmdDispatch(command_buffer, (spatial + 31) / 32,
@@ -193,6 +197,12 @@ std::vector<core::vulkan::BindingInfo> Conv2D::GetBindingInfo() const {
 }
 
 const std::vector<uint32_t>& Conv2D::LoadShaderCode() const {
+  if (use_pointwise_) {
+    static const std::vector<uint32_t> pointwise_shader_code =
+#include "Conv2DPointwise.comp.spv"
+        ;
+    return pointwise_shader_code;
+  }
   if (use_tiled_) {
     static const std::vector<uint32_t> tiled_shader_code =
 #include "Conv2DTiled.comp.spv"
@@ -210,6 +220,7 @@ const std::string Conv2D::GetPipelineCache() const {
   if (cache_dir.empty()) {
     return "";
   }
+  if (use_pointwise_) return cache_dir + "/conv2d_pointwise.cache";
   return cache_dir + (use_tiled_ ? "/conv2d_tiled.cache" : "/conv2d.cache");
 }
 
