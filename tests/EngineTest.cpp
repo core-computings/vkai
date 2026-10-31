@@ -226,4 +226,86 @@ TEST(EngineTest, StandaloneReshapeCopiesLogicalBytesFromLargerStorage) {
   Reshape too_large(&context, 5 * sizeof(float));
   EXPECT_THROW(too_large.Execute(VK_NULL_HANDLE, input, output), std::invalid_argument);
 }
+
+TEST(EngineTest, RetainedOutputStorageOutlivesEngine) {
+  TestModel model({1, 4}, {1, 4});
+  model.Node("Relu", {"input"});
+  std::shared_ptr<Tensor> output;
+  {
+    Engine engine(model.Save());
+    engine.GetInputTensor()->PopulateTensor({-2, 3, -4, 5});
+    engine.ExecuteGraph();
+    output = engine.GetOutputTensor();
+  }
+  EXPECT_EQ(output->Data(), (std::vector<float>{0, 3, 0, 5}));
+  output->Buffer().MapData([](void* mapped) {
+    const auto* values = static_cast<const float*>(mapped);
+    EXPECT_EQ(std::vector<float>(values, values + 4), (std::vector<float>{0, 3, 0, 5}));
+  });
+  std::weak_ptr<Tensor> weak_output = output;
+  output.reset();
+  EXPECT_TRUE(weak_output.expired());
+}
+
+TEST(EngineTest, RetainedViewsAndCopiedTensorShareLiveStorageAfterEngineDestruction) {
+  TestModel model({1, 4}, {2, 2});
+  model.IntWeight("shape", {2}, {2, 2});
+  model.Node("Reshape", {"input", "shape"}, "view");
+  model.Node("Identity", {"view"});
+  for (int iteration = 0; iteration < 3; ++iteration) {
+    std::shared_ptr<Tensor> input, output;
+    std::unique_ptr<Tensor> copy;
+    {
+      Engine engine(model.Save());
+      input = engine.GetInputTensor();
+      input->PopulateTensor({1, 2, 3, 4});
+      engine.ExecuteGraph();
+      output = engine.GetOutputTensor();
+      copy = std::make_unique<Tensor>(*engine.GetGraph().FindTensor("view"));
+      EXPECT_EQ(input->Buffer().buffer, output->Buffer().buffer);
+      EXPECT_EQ(copy->Buffer().buffer, output->Buffer().buffer);
+    }
+    input->Buffer().MapData([](void* mapped) {
+      const float updated[] = {5, 6, 7, 8};
+      std::memcpy(mapped, updated, sizeof(updated));
+    });
+    input.reset();
+    output.reset();
+    copy->Buffer().MapData([](void* mapped) {
+      const auto* values = static_cast<const float*>(mapped);
+      EXPECT_EQ(std::vector<float>(values, values + 4), (std::vector<float>{5, 6, 7, 8}));
+    });
+    copy.reset();
+  }
+}
+
+TEST(EngineTest, CopiedGraphAndRetainedOperationKeepTheirBuffersAlive) {
+  TestModel model({1, 2}, {1, 2});
+  model.Weight("offset", {2}, {1, 2});
+  model.Node("Add", {"input", "offset"}, "sum");
+  model.Node("Relu", {"sum"});
+  Graph graph;
+  std::shared_ptr<Operation> operation;
+  {
+    Engine engine(model.Save(), 1);
+    engine.GetInputTensor()->PopulateTensor({-3, 4});
+    engine.ExecuteGraph();
+    graph = engine.GetGraph();
+    operation = graph.Operations().front();
+    ASSERT_EQ(operation->Type(), OpType::Add);
+  }
+  EXPECT_EQ(graph.Outputs().front()->Data(), (std::vector<float>{0, 6}));
+  graph.FindTensor("offset")->Buffer().MapData([](void* mapped) {
+    const auto* values = static_cast<const float*>(mapped);
+    EXPECT_FLOAT_EQ(values[0], 1);
+    EXPECT_FLOAT_EQ(values[1], 2);
+  });
+  graph = Graph{};
+  operation->Outputs().front()->Buffer().MapData([](void* mapped) {
+    const auto* values = static_cast<const float*>(mapped);
+    EXPECT_FLOAT_EQ(values[0], -2);
+    EXPECT_FLOAT_EQ(values[1], 6);
+  });
+  operation.reset();
+}
 }  // namespace vkai::test

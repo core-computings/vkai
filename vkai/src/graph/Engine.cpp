@@ -13,13 +13,29 @@
 #include "utils/TensorUtils.h"
 
 namespace vkai {
+namespace {
+
+struct TensorStorage {
+  TensorStorage(const std::shared_ptr<core::vulkan::VulkanContext>& owner, VkDeviceSize bytes)
+      : context(owner),
+        buffer(context.get(), bytes,
+               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                   VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+               kHostVisibleMemory) {}
+
+  // Destroy the buffer before releasing its device, including through aliases.
+  std::shared_ptr<core::vulkan::VulkanContext> context;
+  core::vulkan::VulkanBuffer buffer;
+};
+
+}  // namespace
 
 Engine::Engine(const std::string& onnx_path, size_t operations_per_submission)
     : graph_(BuildGraphFromONNX(onnx_path)), operations_per_submission_(operations_per_submission) {
   if (operations_per_submission_ == 0)
     throw std::invalid_argument("Operations per submission must be positive");
   topo_order_ = graph_.TopologicalSort();
-  context_ = std::make_unique<core::vulkan::VulkanContext>(
+  context_ = std::make_shared<core::vulkan::VulkanContext>(
       false, core::vulkan::QueueFamilyType::Compute, VK_NULL_HANDLE);
   context_->Init();
   FindConvReluFusions();
@@ -65,11 +81,8 @@ void Engine::AllocateVulkanBuffers(const MemoryPlan& plan) {
   std::vector<std::shared_ptr<core::vulkan::VulkanBuffer>> buffers;
   buffers.reserve(plan.slots.size());
   for (const auto& slot : plan.slots) {
-    buffers.push_back(std::make_shared<core::vulkan::VulkanBuffer>(
-        context_.get(), slot.capacity,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        kHostVisibleMemory));
+    auto storage = std::make_shared<TensorStorage>(context_, slot.capacity);
+    buffers.emplace_back(storage, &storage->buffer);
   }
   for (const auto& [name, tensor] : graph_.Tensors()) {
     const auto assignment = plan.tensor_slots.find(tensor.get());
