@@ -40,7 +40,8 @@ class Engine {
   // parameters have no graph buffer; graph outputs remain available in Data().
   const Graph& GetGraph() const { return graph_; }
 
-  // Convenience accessors for the first graph input and output.
+  // Convenience accessors for the first graph input and output. Retained tensors
+  // keep their GPU storage and its Vulkan context alive after Engine destruction.
   std::shared_ptr<Tensor> GetInputTensor() const { return graph_.Inputs().at(0); }
 
   std::shared_ptr<Tensor> GetOutputTensor() const { return graph_.Outputs().at(0); }
@@ -77,8 +78,8 @@ class Engine {
 
   void CopyOutputs();
 
-  // Declared before graph_ so tensor buffers are destroyed before their context.
-  std::unique_ptr<core::vulkan::VulkanContext> context_;
+  // Graph storage shares this context; layers are destroyed before this owner.
+  std::shared_ptr<core::vulkan::VulkanContext> context_;
 
   Graph graph_;
 
