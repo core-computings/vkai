@@ -92,6 +92,19 @@ Conv2D::Conv2D(core::vulkan::VulkanContext* context, int input_channels, int out
                static_cast<int64_t>(input_height) * input_width >= 64;
 #endif
 
+#ifdef VKAI_ENABLE_VECTORIZED_DEPTHWISE
+  // Reuse each 3x3 weight across four adjacent outputs. Keep other grouped
+  // configurations on the general kernel, including channel multipliers.
+  use_depthwise_ =
+      groups == input_channels && output_channels == input_channels && kernel_height == 3 &&
+      kernel_width == 3 && dilation_height == 1 && dilation_width == 1 && stride_height <= 2 &&
+      stride_width <= 2 && padding_type == PaddingType::Zero && padding_height <= 1 &&
+      padding_width <= 1 &&
+      ((static_cast<int64_t>(uniform_data_.output_width) + 3) / 4) * uniform_data_.output_height <=
+          65535 * 64 &&
+      static_cast<int64_t>(batch_size) * output_channels <= 65535;
+#endif
+
   uniform_buffer_.MapData(
       [this](void* data) { std::memcpy(data, &uniform_data_, sizeof(UniformData)); });
   valid_ = true;
@@ -167,6 +180,14 @@ void Conv2D::Execute(const VkCommandBuffer& command_buffer,
   vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1,
                           &descriptor_set_, 0, nullptr);
 
+  if (use_depthwise_) {
+    const uint32_t vectors =
+        ((static_cast<uint32_t>(uniform_data_.output_width) + 3) / 4) * uniform_data_.output_height;
+    vkCmdDispatch(command_buffer, (vectors + 63) / 64,
+                  static_cast<uint32_t>(uniform_data_.batch_size) * uniform_data_.output_channels,
+                  1);
+    return;
+  }
   if (use_tiled_) {
     const uint32_t spatial =
         static_cast<uint32_t>(uniform_data_.output_height) * uniform_data_.output_width;
@@ -193,6 +214,12 @@ std::vector<core::vulkan::BindingInfo> Conv2D::GetBindingInfo() const {
 }
 
 const std::vector<uint32_t>& Conv2D::LoadShaderCode() const {
+  if (use_depthwise_) {
+    static const std::vector<uint32_t> depthwise_shader_code =
+#include "Conv2DDepthwise.comp.spv"
+        ;
+    return depthwise_shader_code;
+  }
   if (use_tiled_) {
     static const std::vector<uint32_t> tiled_shader_code =
 #include "Conv2DTiled.comp.spv"
@@ -210,7 +237,9 @@ const std::string Conv2D::GetPipelineCache() const {
   if (cache_dir.empty()) {
     return "";
   }
-  return cache_dir + (use_tiled_ ? "/conv2d_tiled.cache" : "/conv2d.cache");
+  return cache_dir + (use_depthwise_ ? "/conv2d_depthwise.cache"
+                      : use_tiled_   ? "/conv2d_tiled.cache"
+                                     : "/conv2d.cache");
 }
 
 }  // namespace vkai

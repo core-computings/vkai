@@ -63,6 +63,63 @@ TEST_F(Conv2DTest, TiledConvolutionHandlesPartialTilesAndBatches) {
 TEST_F(Conv2DTest, TiledConvolutionMatchesDnCNNChannelsWithoutBias) {
   CheckConvolution(context, 1, 64, 64, 8, 9, 3, 3, 1, 1, false);
 }
+
+void CheckDepthwise(core::vulkan::VulkanContext& context, int batch, int channels, int h, int w,
+                    int sh, int sw, int pad, bool bias, bool relu, int multiplier = 1,
+                    int dilation = 1) {
+  constexpr int kernel = 3;
+  const int oh = (h + 2 * pad - 2 * dilation - 1) / sh + 1;
+  const int ow = (w + 2 * pad - 2 * dilation - 1) / sw + 1;
+  const int oc = channels * multiplier;
+  const auto weights = TestValues(oc * kernel * kernel, .0625F, 4);
+  const auto offsets = bias ? TestValues(oc, .25F, 9) : std::vector<float>{};
+  Conv2D layer(&context, channels, oc, h, w, kernel, kernel, sh, sw, pad, pad, PaddingType::Zero,
+               batch, dilation, dilation, channels, relu);
+  layer.MapWeights(weights, offsets);
+  layer.Init();
+  for (int offset : {0, 7}) {
+    const auto input = TestValues(batch * channels * h * w, .125F, offset);
+    std::vector<float> expected(batch * oc * oh * ow);
+    for (int n = 0; n < batch; ++n)
+      for (int c = 0; c < oc; ++c)
+        for (int y = 0; y < oh; ++y)
+          for (int x = 0; x < ow; ++x) {
+            double value = bias ? offsets[c] : 0;
+            for (int ky = 0; ky < kernel; ++ky)
+              for (int kx = 0; kx < kernel; ++kx) {
+                const int iy = y * sh - pad + ky * dilation;
+                const int ix = x * sw - pad + kx * dilation;
+                if (iy >= 0 && iy < h && ix >= 0 && ix < w)
+                  value += double(input[((n * channels + c / multiplier) * h + iy) * w + ix]) *
+                           weights[(c * kernel + ky) * kernel + kx];
+              }
+            expected[((n * oc + c) * oh + y) * ow + x] = relu ? std::max(value, 0.) : value;
+          }
+    ExpectNear(RunLayer(context, input, expected.size(),
+                        [&](auto cmd, auto& a, auto& b) { layer.Execute(cmd, a, b); }),
+               expected);
+  }
+}
+
+TEST_F(Conv2DTest, DepthwiseHandlesBatchesBiasAndPartialVectors) {
+  CheckDepthwise(context, 2, 17, 9, 13, 1, 1, 1, true, false);
+}
+TEST_F(Conv2DTest, DepthwiseHandlesStridedUnpaddedOutputAndFusedRelu) {
+  CheckDepthwise(context, 2, 5, 13, 19, 2, 2, 0, true, true);
+}
+TEST_F(Conv2DTest, DepthwiseHandlesIndependentStridesWithoutBias) {
+  CheckDepthwise(context, 1, 3, 11, 15, 2, 1, 1, false, false);
+}
+TEST_F(Conv2DTest, DepthwiseHandlesNarrowImagesAndWorkgroupTails) {
+  for (int width : {1, 2, 3, 4, 5, 255, 257})
+    CheckDepthwise(context, 1, 2, 3, width, 1, 1, 1, false, true);
+}
+TEST_F(Conv2DTest, DepthwiseMultiplierRetainsGeneralKernelSemantics) {
+  CheckDepthwise(context, 2, 3, 7, 11, 1, 2, 1, true, false, 2);
+}
+TEST_F(Conv2DTest, DilatedDepthwiseRetainsGeneralKernelSemantics) {
+  CheckDepthwise(context, 2, 3, 7, 11, 1, 1, 2, true, false, 1, 2);
+}
 }  // namespace vkai::test
 
 namespace {

@@ -1,0 +1,75 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : require
+
+// Same NCHW / OIHW descriptors and uniform layout as Conv2D. This path is
+// restricted to 3x3, dilation=1, zero padding, and one output per input channel.
+layout(binding = 0) uniform UniformBufferObject {
+    int input_width;
+    int input_height;
+    int input_channels;
+    int batch_size;
+    int output_width;
+    int output_height;
+    int output_channels;
+    int padding_type;
+    int kernel_width;
+    int kernel_height;
+    int stride_width;
+    int stride_height;
+    int padding_width;
+    int padding_height;
+    int dilation_width;
+    int dilation_height;
+    int groups;
+    int fuse_relu;
+    int reserved_1;
+    int reserved_2;
+} ubo;
+
+layout(binding = 1, std430) readonly buffer InputBuffer { float input_buffer[]; };
+layout(binding = 2, std430) readonly buffer WeightBuffer { float weight_buffer[]; };
+layout(binding = 3, std430) writeonly buffer OutputBuffer { float output_buffer[]; };
+layout(binding = 4, std430) readonly buffer BiasBuffer { float bias_buffer[]; };
+layout(local_size_x = 64) in;
+
+void main() {
+    // Pack rows into workgroups so narrow feature maps do not leave most
+    // invocations idle. A vector never crosses a row or channel boundary.
+    int vectors_per_row = (ubo.output_width + 3) / 4;
+    int y = int(gl_GlobalInvocationID.x) / vectors_per_row;
+    if (y >= ubo.output_height) return;
+    int x = (int(gl_GlobalInvocationID.x) % vectors_per_row) * 4;
+    int plane = int(gl_WorkGroupID.y);
+    int channel = plane % ubo.input_channels;
+    int input_base = plane * ubo.input_height * ubo.input_width;
+    vec4 sums = vec4(bias_buffer[channel]);
+
+    [[unroll]] for (int ky = 0; ky < 3; ++ky) {
+        int iy = y * ubo.stride_height - ubo.padding_height + ky;
+        if (iy < 0 || iy >= ubo.input_height) continue;
+        int row = input_base + iy * ubo.input_width;
+        [[unroll]] for (int kx = 0; kx < 3; ++kx) {
+            int ix = x * ubo.stride_width - ubo.padding_width + kx;
+            float weight = weight_buffer[channel * 9 + ky * 3 + kx];
+            if (ix >= 0 && ix + 3 * ubo.stride_width < ubo.input_width) {
+                vec4 values = vec4(input_buffer[row + ix],
+                                   input_buffer[row + ix + ubo.stride_width],
+                                   input_buffer[row + ix + 2 * ubo.stride_width],
+                                   input_buffer[row + ix + 3 * ubo.stride_width]);
+                sums += values * weight;
+            } else {
+                // Skip padding rather than multiply a fabricated zero, matching
+                // the general kernel even when a weight is non-finite.
+                [[unroll]] for (int lane = 0; lane < 4; ++lane) {
+                    int sample_x = ix + lane * ubo.stride_width;
+                    if (sample_x >= 0 && sample_x < ubo.input_width)
+                        sums[lane] += input_buffer[row + sample_x] * weight;
+                }
+            }
+        }
+    }
+    if (ubo.fuse_relu != 0) sums = max(sums, vec4(0.0));
+    int output_base = (plane * ubo.output_height + y) * ubo.output_width + x;
+    [[unroll]] for (int lane = 0; lane < 4; ++lane)
+        if (x + lane < ubo.output_width) output_buffer[output_base + lane] = sums[lane];
+}

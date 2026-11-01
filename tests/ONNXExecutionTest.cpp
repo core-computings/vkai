@@ -323,6 +323,33 @@ TEST(ONNXExecutionTest, FloatConstantsContainActualData) {
   model.Node("Add", {"input", "offset"});
   model.Check({1, 2}, {4, 6});
 }
+TEST(ONNXExecutionTest, DepthwiseConvReluPreservesBatchesAndRepeatedInference) {
+  Model model({2, 3, 5, 9}, {2, 3, 5, 9});
+  std::vector<float> weights(27, 0.F);
+  for (int c = 0; c < 3; ++c) weights[c * 9 + 4] = c % 2 ? -1.F : 1.F;
+  const std::vector<float> bias{-.25F, .5F, -.75F};
+  model.Weight("w", {3, 1, 3, 3}, weights);
+  model.Weight("b", {3}, bias);
+  auto* conv = model.Node("Conv", {"input", "w", "b"}, "raw");
+  Model::Int(conv, "group", 3);
+  Model::Ints(conv, "pads", {1, 1, 1, 1});
+  model.Node("Relu", {"raw"});
+  vkai::Engine engine(model.Save(), 1);
+  for (int offset : {0, 7}) {
+    const auto input = vkai::test::TestValues(2 * 3 * 5 * 9, .125F, offset);
+    auto expected = input;
+    for (size_t i = 0; i < expected.size(); ++i) {
+      const int c = (i / 45) % 3;
+      expected[i] = std::max(input[i] * (c % 2 ? -1.F : 1.F) + bias[c], 0.F);
+    }
+    engine.GetInputTensor()->PopulateTensor(input);
+    engine.ExecuteGraph();
+    vkai::test::ExpectNear(engine.GetOutputTensor()->Data(), expected);
+    engine.BenchmarkGraph(1, 2);
+    vkai::test::ExpectNear(engine.GetOutputTensor()->Data(), expected);
+  }
+}
+
 TEST(ONNXExecutionTest, RejectsInvalidGroupsAndUnsupportedDomain) {
   Model model({1, 2, 2, 2}, {1, 2, 2, 2});
   model.Weight("w", {2, 1, 1, 1}, {1, 1});
